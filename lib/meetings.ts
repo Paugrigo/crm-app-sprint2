@@ -32,6 +32,7 @@ export function toMeeting(value: unknown): Meeting | null {
   if (
     typeof m.id !== "string" ||
     typeof m.name !== "string" ||
+    !m.name.trim() ||
     typeof m.date !== "string" ||
     !isStringArray(m.participants) ||
     typeof m.notes !== "string"
@@ -40,7 +41,7 @@ export function toMeeting(value: unknown): Meeting | null {
   }
   return {
     id: m.id,
-    name: m.name,
+    name: m.name.trim(),
     date: m.date,
     // Trimmed like the meeting form does, so names compare equal in search filters.
     participants: m.participants.map((p) => p.trim()).filter(Boolean),

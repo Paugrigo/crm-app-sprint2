@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState, type FormEvent, type KeyboardEvent } from "react";
+import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { MeetingDraft } from "@/lib/meetings";
 import { sortTags, useTags } from "@/lib/tags";
 import { DatePicker } from "./date-picker";
@@ -15,6 +15,9 @@ function todayAsDateInputValue(): string {
 }
 
 const labelClass = `mb-1.5 block ${label}`;
+
+/** Same limit as the database's check on meetings.name (1–200 characters after trimming). */
+const NAME_MAX_LENGTH = 200;
 
 /**
  * Form for logging a meeting. Pass `initial` to edit an existing meeting instead: the
@@ -40,6 +43,10 @@ export function MeetingForm({
   const [notes, setNotes] = useState(initial?.notes ?? "");
   const [tagIds, setTagIds] = useState<string[]>(initial?.tagIds ?? []);
   const [saving, setSaving] = useState(false);
+  // Set when saving was tried with a blank name. The browser's `required` alone lets a name of
+  // only spaces through, which the database then rejects with an unreadable error.
+  const [nameError, setNameError] = useState<string | null>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
   const tags = sortTags(useTags());
 
   function toggleTag(tagId: string) {
@@ -71,6 +78,11 @@ export function MeetingForm({
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (saving) return;
+    if (!name.trim()) {
+      setNameError("Enter a meeting name. Spaces alone don't count.");
+      nameRef.current?.focus();
+      return;
+    }
     // Include a participant that was typed but not yet added.
     const pending = participantInput.trim();
     const allParticipants =
@@ -108,14 +120,26 @@ export function MeetingForm({
             Meeting name
           </label>
           <input
+            ref={nameRef}
             id="meeting-name"
             type="text"
             required
+            maxLength={NAME_MAX_LENGTH}
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => {
+              setName(e.target.value);
+              setNameError(null);
+            }}
+            aria-invalid={nameError ? true : undefined}
+            aria-describedby={nameError ? "meeting-name-error" : undefined}
             placeholder="e.g. Quarterly review with Acme"
-            className={input}
+            className={`${input} ${nameError ? "border-danger! focus:ring-danger/25!" : ""}`}
           />
+          {nameError && (
+            <p id="meeting-name-error" role="alert" className="mt-1.5 text-sm text-danger">
+              {nameError}
+            </p>
+          )}
         </div>
         <div>
           <label htmlFor="meeting-date" className={labelClass}>
