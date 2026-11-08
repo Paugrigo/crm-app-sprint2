@@ -17,7 +17,7 @@ import { describeError } from "@/lib/remote-store";
 import { useTags } from "@/lib/tags";
 import { MeetingFilterBar } from "./meeting-filter-bar";
 import { MeetingList } from "./meeting-list";
-import { errorBox, input } from "./ui";
+import { errorBox, iconButton, input } from "./ui";
 
 /** How long to wait after the last keystroke before searching. */
 const SEARCH_DELAY_MS = 250;
@@ -145,6 +145,8 @@ function SearchBox({ urlQuery, loading }: { urlQuery: string; loading: boolean }
     written.current = urlQuery;
   }, [urlQuery]);
 
+  const inputRef = useRef<HTMLInputElement>(null);
+
   function search(value: string, delay: number) {
     setText(value);
     clearTimeout(timer.current);
@@ -179,6 +181,7 @@ function SearchBox({ urlQuery, loading }: { urlQuery: string; loading: boolean }
         <path d="m13 13 4 4" strokeLinecap="round" />
       </svg>
       <input
+        ref={inputRef}
         id="meeting-search"
         type="search"
         value={text}
@@ -193,15 +196,35 @@ function SearchBox({ urlQuery, loading }: { urlQuery: string; loading: boolean }
         placeholder="Search names, participants, notes, tags"
         autoComplete="off"
         spellCheck={false}
-        className={`${input} pl-9 pr-24`}
+        // The browser's own clear button is hidden: it sat wherever the right padding ended.
+        // Ours below stays at the right edge.
+        className={`${input} pl-9 ${loading ? "pr-32" : "pr-10"} [&::-webkit-search-cancel-button]:appearance-none`}
       />
       {loading && (
         <span
           role="status"
-          className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 font-mono text-xs text-faint"
+          className={`pointer-events-none absolute top-1/2 -translate-y-1/2 font-mono text-xs text-faint ${
+            text ? "right-10" : "right-3"
+          }`}
         >
           Searching…
         </span>
+      )}
+      {text && (
+        <button
+          type="button"
+          onClick={() => {
+            search("", 0);
+            inputRef.current?.focus();
+          }}
+          aria-label="Clear search"
+          title="Clear search"
+          className={`${iconButton} absolute right-1.5 top-1/2 -translate-y-1/2`}
+        >
+          <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" className="size-3.5">
+            <path d="m5 5 10 10M15 5 5 15" strokeLinecap="round" />
+          </svg>
+        </button>
       )}
     </form>
   );
