@@ -50,7 +50,7 @@ export function MeetingDetail({ id }: { id: string }) {
     if (!meeting) return false;
     setError(null);
     try {
-      await updateMeeting(id, draft, meeting.tagIds);
+      await updateMeeting(id, draft);
       setEditing(false);
       return true;
     } catch (e) {

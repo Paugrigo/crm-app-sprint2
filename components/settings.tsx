@@ -2,7 +2,14 @@
 
 import { use, useLayoutEffect, useRef, useState, type ChangeEvent } from "react";
 import { browser } from "react-dom";
-import { fromBackup, mergeBackup, saveImport, toBackup } from "@/lib/backup";
+import {
+  fromBackup,
+  localizeBackup,
+  mergeBackup,
+  saveImport,
+  toBackup,
+  type BackupData,
+} from "@/lib/backup";
 import { useMeetings } from "@/lib/meetings";
 import { describeError } from "@/lib/remote-store";
 import { useTags } from "@/lib/tags";
@@ -139,7 +146,14 @@ function BackupSettings() {
       return;
     }
 
-    const merged = mergeBackup({ meetings, tags }, imported);
+    let localized: BackupData;
+    try {
+      localized = await localizeBackup({ meetings, tags }, imported);
+    } catch (e) {
+      setStatus({ kind: "error", text: `Couldn't import. ${describeError(e)}` });
+      return;
+    }
+    const merged = mergeBackup({ meetings, tags }, localized);
     const question =
       `Import ${plural(imported.meetings.length, "meeting")} and ${plural(imported.tags.length, "tag")}?` +
       (merged.updatedMeetings > 0

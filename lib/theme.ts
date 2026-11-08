@@ -6,7 +6,7 @@
 // an inline script reads before the first paint (see lib/theme-cookie.ts).
 
 import { createRemoteStore } from "./remote-store";
-import { writeThemeCookie } from "./theme-cookie";
+import { readThemeCookie, writeThemeCookie } from "./theme-cookie";
 import { getSupabase } from "./supabase/client";
 
 export type ThemePreference = "light" | "dark" | "system";
@@ -15,7 +15,11 @@ function isThemePreference(value: unknown): value is ThemePreference {
   return value === "light" || value === "dark" || value === "system";
 }
 
-/** Falls back to "system" if loading fails: a missing theme shouldn't break the page. */
+/**
+ * If loading fails, falls back to the cookie copy (the last theme this browser loaded): a
+ * missing theme shouldn't break the page, and a brief network error shouldn't reset the
+ * user's choice to "system".
+ */
 async function fetchThemePreference(): Promise<ThemePreference> {
   const { data, error } = await getSupabase()
     .from("user_settings")
@@ -23,7 +27,7 @@ async function fetchThemePreference(): Promise<ThemePreference> {
     .maybeSingle<{ theme: string }>();
   if (error) {
     console.error("Couldn't load the theme preference:", error);
-    return "system";
+    return readThemeCookie();
   }
   return isThemePreference(data?.theme) ? data.theme : "system";
 }

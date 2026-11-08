@@ -120,7 +120,11 @@ async function unlinkTags(meetingId: string, tagIds: string[]) {
   if (error) throw error;
 }
 
-/** Saves a new meeting and returns its ID. Throws if saving fails. */
+/**
+ * Saves a new meeting and returns its ID. Throws if saving fails, and then nothing is saved:
+ * if linking the tags fails, the new meeting is deleted again, so trying once more doesn't
+ * create a duplicate.
+ */
 export async function createMeeting(draft: MeetingDraft): Promise<string> {
   try {
     const { data, error } = await getSupabase()
@@ -129,18 +133,39 @@ export async function createMeeting(draft: MeetingDraft): Promise<string> {
       .select("id")
       .single();
     if (error) throw error;
-    await linkTags(data.id, draft.tagIds);
+    try {
+      await linkTags(data.id, draft.tagIds);
+    } catch (linkError) {
+      await getSupabase().from("meetings").delete().eq("id", data.id);
+      throw linkError;
+    }
     return data.id;
   } finally {
     await store.refresh().catch(() => {});
   }
 }
 
-/** Saves changes to a meeting, including which tags it has. Throws if saving fails. */
-export async function updateMeeting(id: string, draft: MeetingDraft, previousTagIds: string[]) {
+/** The meeting's tag IDs as saved right now (not the in-memory copy, which may be stale). */
+async function savedTagIds(meetingId: string): Promise<string[]> {
+  const { data, error } = await getSupabase()
+    .from("meeting_tags")
+    .select("tag_id")
+    .eq("meeting_id", meetingId)
+    .returns<{ tag_id: string }[]>();
+  if (error) throw error;
+  return data.map((link) => link.tag_id);
+}
+
+/**
+ * Saves changes to a meeting, including which tags it has. Throws if saving fails. Tag changes
+ * are worked out against the saved links, so saving again after a failure (or after another
+ * tab changed the tags) finishes the job instead of failing on links that already exist.
+ */
+export async function updateMeeting(id: string, draft: MeetingDraft) {
   try {
     const { error } = await getSupabase().from("meetings").update(meetingColumns(draft)).eq("id", id);
     if (error) throw error;
+    const previousTagIds = await savedTagIds(id);
     await unlinkTags(id, previousTagIds.filter((tagId) => !draft.tagIds.includes(tagId)));
     await linkTags(id, draft.tagIds.filter((tagId) => !previousTagIds.includes(tagId)));
   } finally {

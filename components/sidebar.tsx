@@ -92,7 +92,8 @@ function Account({ email }: { email: string }) {
     setPending(true);
     setFailed(false);
     try {
-      await signOut();
+      const { ok } = await signOut();
+      if (!ok) throw new Error("Sign-out failed");
       // A full page load (not router.push) on purpose: it clears all in-memory data, including
       // pages Next.js keeps alive in the background, so the next user can't see this user's.
       // eslint-disable-next-line @next/next/no-location-assign-relative-destination

@@ -84,9 +84,15 @@ export async function signUp(email: unknown, password: unknown): Promise<AuthRes
   return { ok: true };
 }
 
-export async function signOut(): Promise<void> {
+/**
+ * Signs out this browser only (other devices stay signed in). Returns ok: false if the session
+ * couldn't be ended; the caller then stays on the page and shows an error.
+ */
+export async function signOut(): Promise<{ ok: boolean }> {
   const supabase = await createClient();
-  await supabase.auth.signOut();
+  const { error } = await supabase.auth.signOut({ scope: "local" });
+  if (error) return { ok: false };
   // The sign-in page (and the next user) start from the System theme.
   (await cookies()).delete(THEME_COOKIE);
+  return { ok: true };
 }

@@ -65,12 +65,12 @@ Out of scope this sprint: filtering meetings by tag, password reset, OAuth provi
 - **Proxy** (`proxy.ts`, Next.js 16's replacement for `middleware.ts`) runs before every request except static assets: refreshes the session cookies, redirects signed-out visitors on any non-public path to `/sign-in?next=<path>` (HTTP 307), and sends signed-in visitors from `/sign-in`/`/sign-up` to `/`. Public paths: `/sign-in`, `/sign-up`, `/auth/confirm`.
 - **Second check:** `app/(private)/layout.tsx` verifies the user on the server (`getCurrentUser()`) and redirects if there is none. Keep both.
 - On the server, verify with `getClaims()` (or `getUser()`), never `getSession()`.
-- Sign in, sign up, and sign out are Server Actions (`lib/auth-actions.ts`) returning readable errors. After success the client does a **full page load** (`window.location.assign`), not `router.push`: it clears the in-memory data stores and the pages Next.js keeps alive, so one user's data can't flash for the next.
+- Sign in, sign up, and sign out are Server Actions (`lib/auth-actions.ts`) returning readable errors. After success the client does a **full page load** (`window.location.assign`), not `router.push`: it clears the in-memory data stores and the pages Next.js keeps alive, so one user's data can't flash for the next. Sign-out uses `scope: "local"` (only this browser) and reports failure instead of redirecting.
 - Email confirmation is **on** in the project: sign-up shows "check your email", and the email link lands on `app/auth/confirm/route.ts`, which exchanges it for a session. The link must be opened in the same browser. Supabase's built-in email sender is rate-limited (a few emails per hour); for testing, create users in the dashboard (Authentication → Add user, with Auto Confirm) or turn confirmation off.
 
 ## Data model (Supabase)
 
-Schema changes live as SQL migrations in `supabase/migrations/` (timestamped files) so the database can be recreated; the schema is in `20261108120000_initial_schema.sql`. Never edit an applied migration; add a new one. Every user-data table has a `user_id` (defaults to `auth.uid()`, cascades when the user is deleted), RLS **enabled**, and policies for the `authenticated` role only, comparing `(select auth.uid()) = user_id`. The `anon` role has no table privileges.
+Schema changes live as SQL migrations in `supabase/migrations/` (timestamped files) so the database can be recreated; the schema is in `20261108120000_initial_schema.sql`. Never edit an applied migration; add a new one. Every user-data table has a `user_id` (defaults to `auth.uid()`, cascades when the user is deleted), RLS **enabled**, and policies for the `authenticated` role only, comparing `(select auth.uid()) = user_id`. The `anon` role has no table privileges; `authenticated` has only select/insert/update/delete (TRUNCATE, REFERENCES, TRIGGER revoked in `20261108144351_revoke_unused_table_privileges.sql`, since TRUNCATE ignores RLS).
 
 - `meetings`: `id`, `user_id`, `name` (1–200 chars), `date`, `participants text[]`, `notes`, `created_at`, `updated_at` (set by trigger). Indexed on `(user_id, date desc, created_at desc)`.
 - `tags`: `id`, `user_id`, `name` (1–40 chars); unique per user ignoring case (unique index on `(user_id, lower(name))`, so a duplicate insert fails with Postgres error `23505`).
@@ -87,7 +87,7 @@ Never rely on app-side filtering for privacy; RLS is the guarantee.
 - Nothing is stored in `localStorage`/`sessionStorage`. One exception to "Supabase only": the theme choice is also copied into a `crm-theme` cookie (`lib/theme-cookie.ts`) so an inline script in the root layout can apply it before the first paint (no flash). `user_settings.theme` stays the source of truth: `components/theme-applier.tsx` re-applies it (and rewrites the cookie) after it loads, and sign-out deletes the cookie.
 - Stores always call `use()` (also after loading, with an already-resolved promise): React requires the same `use()` calls in the render after a suspension.
 - `getCurrentUser()` calls `connection()` first: session checks use `Date.now()`, which Next.js forbids during prerendering.
-- Old browser-only data isn't migrated automatically: export a backup from the old version and import it in Settings.
+- Old browser-only data isn't migrated automatically: export a backup from the old version and import it in Settings. Import (`localizeBackup()` in `lib/backup.ts`) keeps IDs of the user's own items and replaces other IDs with one derived from the user ID and the original ID, so the same file can go into several accounts without ID clashes, and re-importing it updates instead of duplicating.
 
 ## Theming
 

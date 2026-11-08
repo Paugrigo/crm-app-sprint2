@@ -95,8 +95,14 @@ export function describeError(error: unknown): string {
     if (/failed to fetch|network/i.test(message)) {
       return "Couldn't reach the server. Check your connection and try again.";
     }
-    if (/jwt|permission denied|row-level security/i.test(message)) {
+    // Signed out or expired: requests go out as `anon`, which has no table privileges at all
+    // ("permission denied for table ..."), or the token itself is rejected.
+    if (/jwt|permission denied for/i.test(message)) {
       return "Your session has expired. Reload the page to sign in again.";
+    }
+    // Signed in, but Row Level Security refused the row (e.g. it isn't this user's).
+    if (/row-level security/i.test(message)) {
+      return "That item can't be changed from this account. Reload the page and try again.";
     }
     return message;
   }
