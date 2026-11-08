@@ -23,7 +23,21 @@ export type RemoteStore<T> = {
   refresh: () => Promise<void>;
 };
 
-export function createRemoteStore<T>(load: () => Promise<T>): RemoteStore<T> {
+/** Resets for stores whose first load failed; see resetFailedLoads(). */
+const failedLoads = new Set<() => void>();
+
+/**
+ * Lets every store whose first load failed try again on its next render. Call it before
+ * re-rendering after an error, e.g. from the error page's "Try again".
+ */
+export function resetFailedLoads() {
+  failedLoads.forEach((reset) => reset());
+  failedLoads.clear();
+}
+
+export function createRemoteStore<T>(
+  load: () => Promise<T>,
+): RemoteStore<T> & { /** Whether a mounted component is reading it. */ watched: () => boolean } {
   let value: T | undefined;
   let loaded = false;
   let firstLoad: Promise<void> | null = null;
@@ -34,16 +48,25 @@ export function createRemoteStore<T>(load: () => Promise<T>): RemoteStore<T> {
     value = await load();
     loaded = true;
     lastLoadedAt = Date.now();
+    // A later refresh succeeded after a failed first load: stop handing use() the rejection.
+    if (failedLoads.delete(resetFailedLoad)) firstLoad = fulfilledPromise();
     listeners.forEach((listener) => listener());
+  }
+
+  function resetFailedLoad() {
+    firstLoad = null;
   }
 
   function ensureLoaded(): Promise<void> {
     // Loaded by a refresh() before any component read it: hand use() a promise React already
     // knows is fulfilled, so it doesn't suspend.
     if (loaded && !firstLoad) firstLoad = fulfilledPromise();
+    // A failed first load keeps its rejected promise, so every render throws the same error to
+    // the error page. (Clearing it here instead would make React's re-render start a new load,
+    // suspend again, and repeat forever whenever the request keeps failing.) The error page's
+    // "Try again" calls resetFailedLoads() to allow a fresh attempt.
     firstLoad ??= refresh().catch((error: unknown) => {
-      // Let the next render (e.g. the error page's "Try again") start a fresh attempt.
-      firstLoad = null;
+      failedLoads.add(resetFailedLoad);
       throw error;
     });
     return firstLoad;
@@ -80,7 +103,45 @@ export function createRemoteStore<T>(load: () => Promise<T>): RemoteStore<T> {
     return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   }
 
-  return { useValue, refresh };
+  return { useValue, refresh, watched: () => listeners.size > 0 };
+}
+
+export type KeyedRemoteStore<K, T> = {
+  /** The data for `key`. Suspends until it's loaded; throws if loading fails. */
+  useValue: (key: K) => T;
+  /**
+   * Reloads every key that a mounted component is showing and forgets the others (they load
+   * fresh the next time they're read). Rejects if a reload fails.
+   */
+  refresh: () => Promise<void>;
+};
+
+/**
+ * Like createRemoteStore(), but one in-memory copy per key, e.g. per search term. Each key gets
+ * its own store, so it suspends, caches, and refetches on tab focus the same way.
+ */
+export function createKeyedRemoteStore<K, T>(load: (key: K) => Promise<T>): KeyedRemoteStore<K, T> {
+  const stores = new Map<K, RemoteStore<T> & { watched: () => boolean }>();
+
+  function storeFor(key: K) {
+    let store = stores.get(key);
+    if (!store) {
+      store = createRemoteStore(() => load(key));
+      stores.set(key, store);
+    }
+    return store;
+  }
+
+  async function refresh() {
+    const reloads: Promise<void>[] = [];
+    for (const [key, store] of stores) {
+      if (store.watched()) reloads.push(store.refresh());
+      else stores.delete(key);
+    }
+    await Promise.all(reloads);
+  }
+
+  return { useValue: (key) => storeFor(key).useValue(), refresh };
 }
 
 /** A resolved promise marked the way React's use() marks promises it has seen resolve. */

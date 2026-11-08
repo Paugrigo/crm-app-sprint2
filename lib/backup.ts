@@ -222,6 +222,6 @@ export async function saveImport(current: BackupData, merged: MergeResult) {
       if (error) throw error;
     }
   } finally {
-    await Promise.all([refreshTags(), refreshMeetings()]).catch(() => {});
+    await Promise.all([refreshTags().catch(() => {}), refreshMeetings()]);
   }
 }

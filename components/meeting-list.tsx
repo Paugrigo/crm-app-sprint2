@@ -3,7 +3,7 @@ import { formatMeetingDate } from "@/lib/format-date";
 import type { Meeting } from "@/lib/meetings";
 import { DeleteMeetingButton } from "./delete-meeting-button";
 import { MeetingTags } from "./meeting-tags";
-import { buttonPrimary, emptyState, label, panel, panelHeader } from "./ui";
+import { buttonPrimary, buttonSecondary, emptyState, label, panel, panelHeader } from "./ui";
 
 /** Short weekday for a YYYY-MM-DD date, e.g. "Sat". */
 function weekday(date: string): string {
@@ -11,13 +11,40 @@ function weekday(date: string): string {
   return new Date(year, month - 1, day).toLocaleDateString(undefined, { weekday: "short" });
 }
 
+/**
+ * Meetings as rows, newest first. With `query`, they're search results: the header counts
+ * matches, and an empty list says nothing matched (with a button that calls `onClearQuery`).
+ */
 export function MeetingList({
   meetings,
   onDelete,
+  query,
+  onClearQuery,
 }: {
   meetings: Meeting[];
   onDelete: (id: string) => void;
+  query?: string;
+  onClearQuery?: () => void;
 }) {
+  if (meetings.length === 0 && query) {
+    return (
+      <div className={emptyState}>
+        <p className={label}>No matches</p>
+        <p className="mt-2 font-medium text-fg">
+          No meetings match &ldquo;{query}&rdquo;
+        </p>
+        <p className="mt-1 text-sm text-muted">
+          Search looks in meeting names, participants, notes, and tag names.
+        </p>
+        {onClearQuery && (
+          <button type="button" onClick={onClearQuery} className={`${buttonSecondary} mt-4`}>
+            Clear search
+          </button>
+        )}
+      </div>
+    );
+  }
+
   if (meetings.length === 0) {
     return (
       <div className={emptyState}>
@@ -37,8 +64,12 @@ export function MeetingList({
   return (
     <section className={`${panel} overflow-hidden`}>
       <div className={panelHeader}>
-        <h2 className={label}>Meetings</h2>
-        <span className="font-mono text-xs text-muted">{meetings.length} total</span>
+        <h2 className={label}>{query ? "Search results" : "Meetings"}</h2>
+        <span className="font-mono text-xs text-muted">
+          {query
+            ? `${meetings.length} ${meetings.length === 1 ? "match" : "matches"}`
+            : `${meetings.length} total`}
+        </span>
       </div>
       <ul className="divide-y divide-line">
         {sorted.map((meeting) => (

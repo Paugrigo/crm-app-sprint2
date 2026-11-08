@@ -68,7 +68,8 @@ export async function renameTag(id: string, name: string) {
     const { error } = await getSupabase().from("tags").update({ name }).eq("id", id);
     if (error) rethrow(error);
   } finally {
-    await store.refresh().catch(() => {});
+    // Search results can match on tag names.
+    await Promise.all([store.refresh().catch(() => {}), refreshMeetings()]);
   }
 }
 
@@ -78,6 +79,6 @@ export async function deleteTag(id: string) {
     const { error } = await getSupabase().from("tags").delete().eq("id", id);
     if (error) throw error;
   } finally {
-    await Promise.all([store.refresh(), refreshMeetings()]).catch(() => {});
+    await Promise.all([store.refresh().catch(() => {}), refreshMeetings()]);
   }
 }

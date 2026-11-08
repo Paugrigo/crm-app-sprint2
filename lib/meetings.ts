@@ -2,7 +2,7 @@
 // every query to the signed-in user's rows. Browser-only: see lib/remote-store.ts.
 
 import { getSupabase } from "./supabase/client";
-import { createRemoteStore } from "./remote-store";
+import { createKeyedRemoteStore, createRemoteStore } from "./remote-store";
 
 export type Meeting = {
   id: string;
@@ -90,8 +90,39 @@ const store = createRemoteStore(fetchMeetings);
 /** The signed-in user's meetings, newest first. Suspends until loaded. */
 export const useMeetings = store.useValue;
 
-/** Reloads meetings from Supabase (e.g. after tags change). */
-export const refreshMeetings = store.refresh;
+/** Longest search text sent to the database; longer input is cut off. */
+export const SEARCH_MAX_LENGTH = 200;
+
+/**
+ * Meetings matching `query`, newest first, found by the database (the search_meetings
+ * function; see supabase/migrations): only the matching rows are downloaded.
+ */
+async function searchMeetings(query: string): Promise<Meeting[]> {
+  const { data, error } = await getSupabase()
+    .rpc("search_meetings", { search: query })
+    // PostgREST can only order a function's results by selected columns, so created_at is
+    // selected here too (fromRow ignores it).
+    .select(`${MEETING_COLUMNS}, created_at`)
+    .order("date", { ascending: false })
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  // Without generated database types, supabase-js can't tell that this function returns rows
+  // (setof meetings) rather than one value, so the row type is asserted here.
+  return (data as unknown as MeetingRow[]).map(fromRow);
+}
+
+const searchStore = createKeyedRemoteStore(searchMeetings);
+
+/**
+ * The signed-in user's meetings whose name, notes, participants, or tag names contain `query`
+ * (case-insensitive), newest first. Pass a trimmed, non-empty query. Suspends until loaded.
+ */
+export const useMeetingSearch = searchStore.useValue;
+
+/** Reloads meetings and any search results on screen (e.g. after a change). Never rejects. */
+export async function refreshMeetings() {
+  await Promise.all([store.refresh(), searchStore.refresh()]).catch(() => {});
+}
 
 function meetingColumns(draft: MeetingDraft) {
   return {
@@ -141,7 +172,7 @@ export async function createMeeting(draft: MeetingDraft): Promise<string> {
     }
     return data.id;
   } finally {
-    await store.refresh().catch(() => {});
+    await refreshMeetings();
   }
 }
 
@@ -169,7 +200,7 @@ export async function updateMeeting(id: string, draft: MeetingDraft) {
     await unlinkTags(id, previousTagIds.filter((tagId) => !draft.tagIds.includes(tagId)));
     await linkTags(id, draft.tagIds.filter((tagId) => !previousTagIds.includes(tagId)));
   } finally {
-    await store.refresh().catch(() => {});
+    await refreshMeetings();
   }
 }
 
@@ -179,6 +210,6 @@ export async function deleteMeeting(id: string) {
     const { error } = await getSupabase().from("meetings").delete().eq("id", id);
     if (error) throw error;
   } finally {
-    await store.refresh().catch(() => {});
+    await refreshMeetings();
   }
 }
