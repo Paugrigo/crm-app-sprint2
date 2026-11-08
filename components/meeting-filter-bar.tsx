@@ -5,7 +5,6 @@ import {
   DATE_PRESETS,
   describeDate,
   hasFilters,
-  NO_FILTERS,
   type DateFilter,
   type MeetingFilters,
 } from "@/lib/meeting-filters";
@@ -16,14 +15,17 @@ import { buttonGhost, input, label } from "./ui";
 
 /**
  * Tag, date, and participant filters for the meeting log, as one row of dropdowns under the
- * search box. `onChange` gets a patch to apply to the filters in the URL.
+ * search box. `onChange` gets a patch to apply to the filters in the URL; `onClearAll` clears
+ * the search text and every filter.
  */
 export function MeetingFilterBar({
   filters,
   onChange,
+  onClearAll,
 }: {
   filters: MeetingFilters;
   onChange: (patch: Partial<MeetingFilters>) => void;
+  onClearAll: () => void;
 }) {
   return (
     <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -31,7 +33,7 @@ export function MeetingFilterBar({
       <DateFilterMenu date={filters.date} onChange={(date) => onChange({ date })} />
       <PeopleFilter filters={filters} onChange={onChange} />
       {hasFilters(filters) && (
-        <button type="button" onClick={() => onChange(NO_FILTERS)} className={`${buttonGhost} text-xs`}>
+        <button type="button" onClick={onClearAll} className={`${buttonGhost} text-xs`}>
           Clear all
         </button>
       )}

@@ -42,7 +42,8 @@ export function toMeeting(value: unknown): Meeting | null {
     id: m.id,
     name: m.name,
     date: m.date,
-    participants: m.participants,
+    // Trimmed like the meeting form does, so names compare equal in search filters.
+    participants: m.participants.map((p) => p.trim()).filter(Boolean),
     notes: m.notes,
     tagIds: isStringArray(m.tagIds) ? m.tagIds : [],
   };

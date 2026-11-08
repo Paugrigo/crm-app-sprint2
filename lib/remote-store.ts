@@ -13,6 +13,9 @@
 
 import { use, useSyncExternalStore } from "react";
 
+/** How many keys a keyed store caches at most (beyond the ones on screen or loading). */
+const KEYED_STORE_LIMIT = 20;
+
 /** Refetch when the tab becomes visible again, at most this often, to pick up other tabs' changes. */
 const FOCUS_REFRESH_INTERVAL_MS = 30_000;
 
@@ -35,9 +38,15 @@ export function resetFailedLoads() {
   failedLoads.clear();
 }
 
-export function createRemoteStore<T>(
-  load: () => Promise<T>,
-): RemoteStore<T> & { /** Whether a mounted component is reading it. */ watched: () => boolean } {
+/** Internal extras of a store, used by createKeyedRemoteStore(). */
+type TrackedRemoteStore<T> = RemoteStore<T> & {
+  /** Whether a mounted component is reading it. */
+  watched: () => boolean;
+  /** Whether a load has finished (so dropping it can't interrupt one React is waiting on). */
+  loaded: () => boolean;
+};
+
+export function createRemoteStore<T>(load: () => Promise<T>): TrackedRemoteStore<T> {
   let value: T | undefined;
   let loaded = false;
   let firstLoad: Promise<void> | null = null;
@@ -81,7 +90,14 @@ export function createRemoteStore<T>(
   }
 
   function subscribe(listener: () => void) {
-    if (listeners.size === 0) document.addEventListener("visibilitychange", handleVisibilityChange);
+    if (listeners.size === 0) {
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+      // Shown again after nobody was reading it (e.g. a cached search revisited): refetch in the
+      // background if it's old, as on tab focus.
+      if (loaded && Date.now() - lastLoadedAt >= FOCUS_REFRESH_INTERVAL_MS) {
+        refresh().catch(() => {});
+      }
+    }
     listeners.add(listener);
     return () => {
       listeners.delete(listener);
@@ -103,7 +119,7 @@ export function createRemoteStore<T>(
     return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   }
 
-  return { useValue, refresh, watched: () => listeners.size > 0 };
+  return { useValue, refresh, watched: () => listeners.size > 0, loaded: () => loaded };
 }
 
 export type KeyedRemoteStore<K, T> = {
@@ -121,15 +137,30 @@ export type KeyedRemoteStore<K, T> = {
  * its own store, so it suspends, caches, and refetches on tab focus the same way.
  */
 export function createKeyedRemoteStore<K, T>(load: (key: K) => Promise<T>): KeyedRemoteStore<K, T> {
-  const stores = new Map<K, RemoteStore<T> & { watched: () => boolean }>();
+  // In order of last use (oldest first), so the cache can drop the least recently used keys.
+  const stores = new Map<K, TrackedRemoteStore<T>>();
 
   function storeFor(key: K) {
     let store = stores.get(key);
-    if (!store) {
+    if (store) {
+      stores.delete(key);
+    } else {
       store = createRemoteStore(() => load(key));
-      stores.set(key, store);
+      evictUnused();
     }
+    stores.set(key, store);
     return store;
+  }
+
+  /**
+   * Keeps at most KEYED_STORE_LIMIT keys by dropping the least recently used ones that nobody
+   * is showing. Keys still loading are kept: React is waiting on their promise.
+   */
+  function evictUnused() {
+    for (const [key, store] of stores) {
+      if (stores.size < KEYED_STORE_LIMIT) return;
+      if (!store.watched() && store.loaded()) stores.delete(key);
+    }
   }
 
   async function refresh() {

@@ -41,13 +41,14 @@ function isFiltered(search: MeetingSearch): boolean {
 export function MeetingLog() {
   use(browser("Meetings are loaded from Supabase in the browser."));
 
-  const filters = readMeetingFilters(useSearchParams());
+  const urlFilters = readMeetingFilters(useSearchParams());
   // Ignore tags that no longer exist (e.g. deleted since the link was bookmarked).
   const tags = useTags();
-  const search = toMeetingSearch({
-    ...filters,
-    tagIds: filters.tagIds.filter((id) => tags.some((t) => t.id === id)),
-  });
+  const filters: MeetingFilters = {
+    ...urlFilters,
+    tagIds: urlFilters.tagIds.filter((id) => tags.some((t) => t.id === id)),
+  };
+  const search = toMeetingSearch(filters);
   // While the next results load, keep showing the current ones (dimmed) instead of the
   // Suspense fallback. Compared as JSON, since a new object is built on every render.
   const searchKey = JSON.stringify(search);
@@ -55,6 +56,14 @@ export function MeetingLog() {
   const shown = JSON.parse(shownKey) as MeetingSearch;
   const loading = shownKey !== searchKey;
   const [error, setError] = useState<string | null>(null);
+  // Bumped by "Clear all": remounts the search box, which drops text typed but not yet searched
+  // and its pending debounce timer (that would otherwise write the text back into the URL).
+  const [searchBoxKey, setSearchBoxKey] = useState(0);
+
+  function clearAll() {
+    setSearchBoxKey((key) => key + 1);
+    writeMeetingFilters(NO_FILTERS);
+  }
 
   async function handleDelete(id: string) {
     setError(null);
@@ -67,8 +76,8 @@ export function MeetingLog() {
 
   return (
     <section>
-      <SearchBox urlQuery={filters.query} loading={loading} />
-      <MeetingFilterBar filters={filters} onChange={updateFilters} />
+      <SearchBox key={searchBoxKey} urlQuery={filters.query} loading={loading} />
+      <MeetingFilterBar filters={filters} onChange={updateFilters} onClearAll={clearAll} />
       {error && (
         <p role="alert" className={`${errorBox} mb-4`}>
           {error}
@@ -76,7 +85,7 @@ export function MeetingLog() {
       )}
       <div aria-busy={loading} className={`transition-opacity ${loading ? "opacity-60" : ""}`}>
         {isFiltered(shown) ? (
-          <SearchResults search={shown} onDelete={handleDelete} />
+          <SearchResults search={shown} onDelete={handleDelete} onClear={clearAll} />
         ) : (
           <AllMeetings onDelete={handleDelete} />
         )}
@@ -93,9 +102,11 @@ function AllMeetings({ onDelete }: { onDelete: (id: string) => void }) {
 function SearchResults({
   search,
   onDelete,
+  onClear,
 }: {
   search: MeetingSearch;
   onDelete: (id: string) => void;
+  onClear: () => void;
 }) {
   return (
     <MeetingList
@@ -104,7 +115,7 @@ function SearchResults({
       search={{
         query: search.query,
         filtered: isFiltered({ ...search, query: "" }),
-        onClear: () => writeMeetingFilters(NO_FILTERS),
+        onClear,
       }}
     />
   );
@@ -125,10 +136,22 @@ function SearchBox({ urlQuery, loading }: { urlQuery: string; loading: boolean }
 
   useEffect(() => () => clearTimeout(timer.current), []);
 
+  // The search text this box last wrote into the URL. When the URL's text changes to something
+  // else (Back/Forward, a link), a pending search is dropped so it can't overwrite that.
+  const written = useRef(urlQuery);
+  useEffect(() => {
+    if (urlQuery === written.current) return;
+    clearTimeout(timer.current);
+    written.current = urlQuery;
+  }, [urlQuery]);
+
   function search(value: string, delay: number) {
     setText(value);
     clearTimeout(timer.current);
-    timer.current = setTimeout(() => updateFilters({ query: value.trim() }), delay);
+    timer.current = setTimeout(() => {
+      written.current = value.trim();
+      updateFilters({ query: value.trim() });
+    }, delay);
   }
 
   return (
