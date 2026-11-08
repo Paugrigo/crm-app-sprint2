@@ -134,4 +134,4 @@ Never rely on app-side filtering for privacy; RLS is the guarantee.
 
 ## Keeping this file current
 
-Update this file as the app evolves: when features, structure, conventions, or decisions change, reflect them here in the same change. `README.md` still describes the localStorage version on purpose; it gets rewritten once at the end of the sprint, so don't update it piecemeal before then.
+Update this file as the app evolves: when features, structure, conventions, or decisions change, reflect them here in the same change. `README.md` describes the Supabase version for users and graders (what the app does, the app option, setup with environment variables, the screenshot, and the optional task with its PR); keep it current when features or setup steps change.
