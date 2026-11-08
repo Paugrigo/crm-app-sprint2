@@ -2,10 +2,19 @@
 
 import { use, useLayoutEffect, useState, type FormEvent, type KeyboardEvent } from "react";
 import { browser } from "react-dom";
-import { saveMeetings } from "@/lib/meetings";
-import { saveTags, sameTagName, sortTags, TAG_NAME_MAX_LENGTH, type Tag } from "@/lib/tags";
-import { useMeetings } from "@/lib/use-meetings";
-import { useTags } from "@/lib/use-tags";
+import { useMeetings } from "@/lib/meetings";
+import { describeError } from "@/lib/remote-store";
+import {
+  createTag,
+  deleteTag,
+  DuplicateTagNameError,
+  renameTag,
+  sameTagName,
+  sortTags,
+  TAG_NAME_MAX_LENGTH,
+  useTags,
+  type Tag,
+} from "@/lib/tags";
 import { DeleteButton } from "./delete-button";
 import {
   buttonPrimary,
@@ -20,15 +29,17 @@ import {
 
 type Status = { kind: "success" | "error"; text: string };
 
-// Browser-only: tags and meetings live in localStorage. Render inside a <Suspense> boundary.
+// Browser-only: tags and meetings are loaded from Supabase with the signed-in user's session.
+// Render inside a <Suspense> boundary.
 export function TagsManager() {
-  use(browser("Tags are stored in localStorage."));
+  use(browser("Tags are loaded from Supabase in the browser."));
 
   const tags = useTags();
   const meetings = useMeetings();
   const [name, setName] = useState("");
   const [status, setStatus] = useState<Status | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
 
   // Next.js keeps this page alive (hidden) after navigating away; don't show an old
   // result message or a half-finished rename when coming back.
@@ -40,10 +51,10 @@ export function TagsManager() {
     [],
   );
 
-  function createTag(event: FormEvent<HTMLFormElement>) {
+  async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmed = name.trim();
-    if (!trimmed) return;
+    if (!trimmed || creating) return;
 
     const existing = tags.find((tag) => sameTagName(tag.name, trimmed));
     if (existing) {
@@ -51,16 +62,25 @@ export function TagsManager() {
       return;
     }
 
-    if (saveTags([...tags, { id: crypto.randomUUID(), name: trimmed }])) {
+    setCreating(true);
+    try {
+      await createTag(trimmed);
       setName("");
       setStatus({ kind: "success", text: `Created tag "${trimmed}".` });
-    } else {
-      setStatus({ kind: "error", text: "Couldn't save: browser storage is unavailable or full." });
+    } catch (e) {
+      setStatus({
+        kind: "error",
+        text:
+          e instanceof DuplicateTagNameError
+            ? `A tag named "${trimmed}" already exists.`
+            : `Couldn't create the tag. ${describeError(e)}`,
+      });
     }
+    setCreating(false);
   }
 
-  /** Renames the tag; returns an error message, or null on success. */
-  function renameTag(tag: Tag, newName: string): string | null {
+  /** Renames the tag; resolves to an error message, or null on success. */
+  async function handleRename(tag: Tag, newName: string): Promise<string | null> {
     const trimmed = newName.trim();
     if (!trimmed) return "Tag name can't be empty.";
     const existing = tags.find((t) => t.id !== tag.id && sameTagName(t.name, trimmed));
@@ -68,31 +88,26 @@ export function TagsManager() {
 
     // Meetings refer to tags by ID, so they pick up the new name automatically.
     if (trimmed !== tag.name) {
-      const renamed = tags.map((t) => (t.id === tag.id ? { ...t, name: trimmed } : t));
-      if (!saveTags(renamed)) return "Couldn't save: browser storage is unavailable or full.";
+      try {
+        await renameTag(tag.id, trimmed);
+      } catch (e) {
+        return e instanceof DuplicateTagNameError
+          ? `A tag named "${trimmed}" already exists.`
+          : `Couldn't rename the tag. ${describeError(e)}`;
+      }
       setStatus({ kind: "success", text: `Renamed "${tag.name}" to "${trimmed}".` });
     }
     setEditingId(null);
     return null;
   }
 
-  function deleteTag(tag: Tag) {
-    // Remove the tag from meetings first, so a failed save never leaves meetings pointing at
-    // a deleted tag.
-    const usedBy = meetings.filter((meeting) => meeting.tagIds.includes(tag.id));
-    const meetingsSaved =
-      usedBy.length === 0 ||
-      saveMeetings(
-        meetings.map((meeting) =>
-          meeting.tagIds.includes(tag.id)
-            ? { ...meeting, tagIds: meeting.tagIds.filter((id) => id !== tag.id) }
-            : meeting,
-        ),
-      );
-    if (meetingsSaved && saveTags(tags.filter((t) => t.id !== tag.id))) {
+  async function handleDelete(tag: Tag) {
+    // The database removes the tag from every meeting that uses it; the meetings are kept.
+    try {
+      await deleteTag(tag.id);
       setStatus({ kind: "success", text: `Deleted tag "${tag.name}".` });
-    } else {
-      setStatus({ kind: "error", text: "Couldn't delete: browser storage is unavailable." });
+    } catch (e) {
+      setStatus({ kind: "error", text: `Couldn't delete the tag. ${describeError(e)}` });
     }
   }
 
@@ -106,7 +121,7 @@ export function TagsManager() {
         <div className={panelHeader}>
           <h2 className={label}>Create a tag</h2>
         </div>
-        <form onSubmit={createTag} className="p-4">
+        <form onSubmit={handleCreate} className="p-4">
           <label htmlFor="tag-name" className={`mb-1.5 block ${label}`}>
             Tag name
           </label>
@@ -126,10 +141,10 @@ export function TagsManager() {
             />
             <button
               type="submit"
-              disabled={!name.trim()}
+              disabled={!name.trim() || creating}
               className={`${buttonPrimary} shrink-0 px-4`}
             >
-              Create tag
+              {creating ? "Creating…" : "Create tag"}
             </button>
           </div>
           {status && (
@@ -168,7 +183,7 @@ export function TagsManager() {
                   <li key={tag.id} className="bg-surface-2 px-4 py-2.5">
                     <RenameTagForm
                       tag={tag}
-                      onRename={(newName) => renameTag(tag, newName)}
+                      onRename={(newName) => handleRename(tag, newName)}
                       onCancel={() => setEditingId(null)}
                     />
                   </li>
@@ -222,7 +237,7 @@ export function TagsManager() {
                           ? `Delete the tag "${tag.name}"?`
                           : `Delete the tag "${tag.name}"? It will be removed from ${count} ${count === 1 ? "meeting" : "meetings"}. The meetings themselves are kept.`
                       }
-                      onConfirm={() => deleteTag(tag)}
+                      onConfirm={() => handleDelete(tag)}
                     />
                   </div>
                 </li>
@@ -242,16 +257,24 @@ function RenameTagForm({
   onCancel,
 }: {
   tag: Tag;
-  onRename: (name: string) => string | null;
+  onRename: (name: string) => Promise<string | null>;
   onCancel: () => void;
 }) {
   const [name, setName] = useState(tag.name);
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const inputId = `rename-tag-${tag.id}`;
 
-  function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setError(onRename(name));
+    if (saving) return;
+    setSaving(true);
+    const message = await onRename(name);
+    // On success the row switches back to display mode and this form unmounts.
+    if (message !== null) {
+      setError(message);
+      setSaving(false);
+    }
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
@@ -280,8 +303,8 @@ function RenameTagForm({
           aria-describedby={error ? `${inputId}-error` : undefined}
           className={`${input} min-w-0 flex-1 py-1.5 font-mono`}
         />
-        <button type="submit" className={buttonPrimary}>
-          Save
+        <button type="submit" disabled={saving} className={buttonPrimary}>
+          {saving ? "Saving…" : "Save"}
         </button>
         <button
           type="button"

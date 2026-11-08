@@ -1,72 +1,54 @@
-// Theme preference. Stored in localStorage and applied as a data-theme attribute on <html>:
-// "light" or "dark" force that theme; "system" removes the attribute so CSS follows the OS.
-// Browser-only, except THEME_SCRIPT, which the root layout inlines into <head>.
+// Theme preference, stored per user in Supabase (table `user_settings`; no row means "system")
+// and applied as a data-theme attribute on <html>: "light" or "dark" force that theme; "system"
+// removes the attribute so CSS follows the OS. Browser-only: see lib/remote-store.ts.
+//
+// To avoid a flash of the wrong theme on page load, the choice is also copied into a cookie that
+// an inline script reads before the first paint (see lib/theme-cookie.ts).
+
+import { createRemoteStore } from "./remote-store";
+import { writeThemeCookie } from "./theme-cookie";
+import { getSupabase } from "./supabase/client";
 
 export type ThemePreference = "light" | "dark" | "system";
-
-const STORAGE_KEY = "crm.theme.v1";
-
-/**
- * Runs before the first paint on every full page load, so a saved theme applies without
- * a flash of the wrong colors. Keep it in sync with applyTheme().
- */
-export const THEME_SCRIPT = `try{var t=localStorage.getItem(${JSON.stringify(STORAGE_KEY)});if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}`;
 
 function isThemePreference(value: unknown): value is ThemePreference {
   return value === "light" || value === "dark" || value === "system";
 }
 
-/** The saved preference, or "system" if none is saved or storage is unavailable. */
-export function loadThemePreference(): ThemePreference {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    return isThemePreference(saved) ? saved : "system";
-  } catch {
+/** Falls back to "system" if loading fails: a missing theme shouldn't break the page. */
+async function fetchThemePreference(): Promise<ThemePreference> {
+  const { data, error } = await getSupabase()
+    .from("user_settings")
+    .select("theme")
+    .maybeSingle<{ theme: string }>();
+  if (error) {
+    console.error("Couldn't load the theme preference:", error);
     return "system";
   }
+  return isThemePreference(data?.theme) ? data.theme : "system";
 }
 
-/** Server snapshot for useSyncExternalStore. */
-export function loadThemePreferenceOnServer(): ThemePreference {
-  return "system";
-}
+const store = createRemoteStore(fetchThemePreference);
 
-function applyTheme(preference: ThemePreference) {
+/** The signed-in user's theme preference. Suspends until loaded. */
+export const useThemePreference = store.useValue;
+
+/** Applies the preference to the page and updates the cookie copy used on the next page load. */
+export function applyTheme(preference: ThemePreference) {
   if (preference === "system") delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = preference;
+  writeThemeCookie(preference);
 }
 
-const listeners = new Set<() => void>();
-
-/**
- * Calls listener when the preference changes in this tab. Changes from other tabs are
- * applied to this page too, so every open tab shows the same theme.
- */
-export function subscribeToTheme(listener: () => void): () => void {
-  function handleStorage(event: StorageEvent) {
-    if (event.key === STORAGE_KEY || event.key === null) {
-      applyTheme(loadThemePreference());
-      listener();
-    }
-  }
-  listeners.add(listener);
-  window.addEventListener("storage", handleStorage);
-  return () => {
-    listeners.delete(listener);
-    window.removeEventListener("storage", handleStorage);
-  };
-}
-
-/** Saves and applies the preference. Still applies it for this page if saving fails. */
-export function saveThemePreference(preference: ThemePreference): boolean {
+/** Applies the preference right away and saves it. Throws if saving fails. */
+export async function saveThemePreference(preference: ThemePreference) {
   applyTheme(preference);
-  let saved = true;
   try {
-    if (preference === "system") localStorage.removeItem(STORAGE_KEY);
-    else localStorage.setItem(STORAGE_KEY, preference);
-  } catch {
-    saved = false;
+    const { error } = await getSupabase()
+      .from("user_settings")
+      .upsert({ theme: preference }, { onConflict: "user_id" });
+    if (error) throw error;
+  } finally {
+    await store.refresh().catch(() => {});
   }
-  listeners.forEach((listener) => listener());
-  return saved;
 }

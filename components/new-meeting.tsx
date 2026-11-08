@@ -3,35 +3,36 @@
 import { useRouter } from "next/navigation";
 import { use, useState } from "react";
 import { browser } from "react-dom";
-import { saveMeetings, type Meeting } from "@/lib/meetings";
-import { useMeetings } from "@/lib/use-meetings";
+import { createMeeting, type MeetingDraft } from "@/lib/meetings";
+import { describeError } from "@/lib/remote-store";
 import { MeetingForm } from "./meeting-form";
 import { errorBox } from "./ui";
 
-// Browser-only: saving needs localStorage, and the form's default date must be the visitor's
-// today, not the day the page was prerendered. Render inside a <Suspense> boundary.
+// Browser-only: saving uses the signed-in user's Supabase session, and the form's default date
+// must be the visitor's today, not the day the page was prerendered. Render inside <Suspense>.
 export function NewMeeting() {
-  use(browser("Meetings are stored in localStorage."));
+  use(browser("Meetings are saved to Supabase from the browser."));
 
   const router = useRouter();
-  const meetings = useMeetings();
-  const [saveFailed, setSaveFailed] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  function addMeeting(draft: Omit<Meeting, "id">) {
-    const id = crypto.randomUUID();
-    if (saveMeetings([{ id, ...draft }, ...meetings])) {
-      setSaveFailed(false);
+  async function addMeeting(draft: MeetingDraft): Promise<boolean> {
+    setError(null);
+    try {
+      const id = await createMeeting(draft);
       router.push(`/meetings/${id}`);
-    } else {
-      setSaveFailed(true);
+      return true;
+    } catch (e) {
+      setError(`Couldn't save your meeting. ${describeError(e)}`);
+      return false;
     }
   }
 
   return (
     <>
-      {saveFailed && (
+      {error && (
         <p role="alert" className={`${errorBox} mb-4`}>
-          Couldn&apos;t save your meeting: browser storage is unavailable or full.
+          {error}
         </p>
       )}
       <MeetingForm onSubmit={addMeeting} />

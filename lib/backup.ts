@@ -1,8 +1,10 @@
-// Backups: a JSON file of all meetings and tags that the user downloads and can import later,
-// e.g. in another browser. Pure functions; saving is up to the caller.
+// Backups: a JSON file of all the user's meetings and tags that they download and can import
+// later (also how data from the old browser-only version of the app moves into Supabase).
+// The format functions are pure; saveImport() writes a merge result to Supabase.
 
-import { toMeetings, type Meeting } from "./meetings";
-import { isTag, sameTagName, type Tag } from "./tags";
+import { refreshMeetings, toMeetings, type Meeting } from "./meetings";
+import { getSupabase } from "./supabase/client";
+import { isTag, refreshTags, sameTagName, type Tag } from "./tags";
 
 const BACKUP_FORMAT = "crm-meetings-backup";
 
@@ -97,4 +99,84 @@ export function mergeBackup(current: BackupData, imported: BackupData): MergeRes
     updatedMeetings,
     newTags,
   };
+}
+
+function sameMeeting(a: Meeting, b: Meeting): boolean {
+  return (
+    a.name === b.name &&
+    a.date === b.date &&
+    a.notes === b.notes &&
+    a.participants.join("\n") === b.participants.join("\n") &&
+    [...a.tagIds].sort().join() === [...b.tagIds].sort().join()
+  );
+}
+
+/**
+ * Writes the result of mergeBackup(current, imported) to Supabase, changing only what differs
+ * from `current`: new or renamed tags, new or changed meetings and their tag links, and tags
+ * that were merged into another tag. Throws if a request fails (earlier steps stay saved).
+ */
+export async function saveImport(current: BackupData, merged: MergeResult) {
+  const supabase = getSupabase();
+  try {
+    const currentTags = new Map(current.tags.map((t) => [t.id, t]));
+    const changedTags = merged.tags.filter((t) => currentTags.get(t.id)?.name !== t.name);
+    if (changedTags.length > 0) {
+      const { error } = await supabase
+        .from("tags")
+        .upsert(changedTags.map(({ id, name }) => ({ id, name })), { onConflict: "id" });
+      if (error) throw error;
+    }
+
+    const currentMeetings = new Map(current.meetings.map((m) => [m.id, m]));
+    const changedMeetings = merged.meetings.filter((m) => {
+      const existing = currentMeetings.get(m.id);
+      return !existing || !sameMeeting(existing, m);
+    });
+    if (changedMeetings.length > 0) {
+      const { error } = await supabase.from("meetings").upsert(
+        changedMeetings.map(({ id, name, date, participants, notes }) => ({
+          id,
+          name,
+          date,
+          participants,
+          notes,
+        })),
+        { onConflict: "id" },
+      );
+      if (error) throw error;
+    }
+
+    const tagIds = new Set(merged.tags.map((t) => t.id));
+    for (const meeting of changedMeetings) {
+      const before = currentMeetings.get(meeting.id)?.tagIds ?? [];
+      // Skip IDs of tags that don't exist (e.g. deleted before the backup was made).
+      const after = meeting.tagIds.filter((id) => tagIds.has(id));
+      const removed = before.filter((id) => !after.includes(id));
+      const added = after.filter((id) => !before.includes(id));
+      if (removed.length > 0) {
+        const { error } = await supabase
+          .from("meeting_tags")
+          .delete()
+          .eq("meeting_id", meeting.id)
+          .in("tag_id", removed);
+        if (error) throw error;
+      }
+      if (added.length > 0) {
+        const { error } = await supabase
+          .from("meeting_tags")
+          .insert(added.map((tagId) => ({ meeting_id: meeting.id, tag_id: tagId })));
+        if (error) throw error;
+      }
+    }
+
+    // Existing tags that the backup merged into another tag (same name).
+    const mergedAway = current.tags.filter((t) => !tagIds.has(t.id)).map((t) => t.id);
+    if (mergedAway.length > 0) {
+      const { error } = await supabase.from("tags").delete().in("id", mergedAway);
+      if (error) throw error;
+    }
+  } finally {
+    await Promise.all([refreshTags(), refreshMeetings()]).catch(() => {});
+  }
 }

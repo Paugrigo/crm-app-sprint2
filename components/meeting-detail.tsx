@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation";
 import { use, useLayoutEffect, useState } from "react";
 import { browser } from "react-dom";
 import { formatMeetingDate } from "@/lib/format-date";
-import { saveMeetings, type Meeting } from "@/lib/meetings";
-import { useMeetings } from "@/lib/use-meetings";
+import { deleteMeeting, updateMeeting, useMeetings, type MeetingDraft } from "@/lib/meetings";
+import { describeError } from "@/lib/remote-store";
 import { DeleteMeetingButton } from "./delete-meeting-button";
 import { MeetingForm } from "./meeting-form";
 import { MeetingTags } from "./meeting-tags";
@@ -22,15 +22,15 @@ import {
 
 const fieldRow = "grid gap-1.5 px-5 py-3 sm:grid-cols-[8rem_1fr] sm:gap-4";
 
-// Browser-only: meetings come from localStorage, which doesn't exist during prerendering.
-// Render inside a <Suspense> boundary.
+// Browser-only: meetings are loaded from Supabase with the signed-in user's session. Row Level
+// Security means another user's meeting ID simply isn't found. Render inside <Suspense>.
 export function MeetingDetail({ id }: { id: string }) {
-  use(browser("Meetings are stored in localStorage."));
+  use(browser("Meetings are loaded from Supabase in the browser."));
 
   const router = useRouter();
   const meetings = useMeetings();
   const meeting = meetings.find((m) => m.id === id);
-  const [failedAction, setFailedAction] = useState<"save" | "delete" | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [deleted, setDeleted] = useState(false);
   const [editing, setEditing] = useState(false);
 
@@ -41,26 +41,34 @@ export function MeetingDetail({ id }: { id: string }) {
     () => () => {
       setDeleted(false);
       setEditing(false);
-      setFailedAction(null);
+      setError(null);
     },
     [],
   );
 
-  function updateMeeting(draft: Omit<Meeting, "id">) {
-    if (saveMeetings(meetings.map((m) => (m.id === id ? { id, ...draft } : m)))) {
+  async function saveChanges(draft: MeetingDraft): Promise<boolean> {
+    if (!meeting) return false;
+    setError(null);
+    try {
+      await updateMeeting(id, draft, meeting.tagIds);
       setEditing(false);
-      setFailedAction(null);
-    } else {
-      setFailedAction("save");
+      return true;
+    } catch (e) {
+      setError(`Couldn't save your changes. ${describeError(e)}`);
+      return false;
     }
   }
 
-  function deleteMeeting(meetingId: string) {
-    if (saveMeetings(meetings.filter((m) => m.id !== meetingId))) {
-      setDeleted(true);
+  async function handleDelete(meetingId: string) {
+    setError(null);
+    // Set before deleting: the refetch afterwards no longer has this meeting.
+    setDeleted(true);
+    try {
+      await deleteMeeting(meetingId);
       router.push("/");
-    } else {
-      setFailedAction("delete");
+    } catch (e) {
+      setDeleted(false);
+      setError(`Couldn't delete the meeting. ${describeError(e)}`);
     }
   }
 
@@ -74,7 +82,7 @@ export function MeetingDetail({ id }: { id: string }) {
         <p className={label}>Not found</p>
         <p className="mt-2 font-medium text-fg">Meeting not found</p>
         <p className="mt-1 text-sm text-muted">
-          It may have been deleted, or it was saved in a different browser.
+          It may have been deleted, or the link is wrong.
         </p>
         <Link href="/" className={`${buttonPrimary} mt-4`}>
           Go to meeting log
@@ -88,11 +96,9 @@ export function MeetingDetail({ id }: { id: string }) {
       {/* React hoists <title> into <head>, so bookmarks get the meeting's name. */}
       <title>{`${meeting.name} · Meeting log`}</title>
 
-      {failedAction && (
+      {error && (
         <p role="alert" className={`${errorBox} m-4 mb-0`}>
-          {failedAction === "save"
-            ? "Couldn't save your changes: browser storage is unavailable or full."
-            : "Couldn't delete: browser storage is unavailable."}
+          {error}
         </p>
       )}
 
@@ -105,10 +111,10 @@ export function MeetingDetail({ id }: { id: string }) {
             <MeetingForm
               initial={meeting}
               submitLabel="Save changes"
-              onSubmit={updateMeeting}
+              onSubmit={saveChanges}
               onCancel={() => {
                 setEditing(false);
-                setFailedAction(null);
+                setError(null);
               }}
             />
           </div>
@@ -129,7 +135,7 @@ export function MeetingDetail({ id }: { id: string }) {
                 type="button"
                 onClick={() => {
                   setEditing(true);
-                  setFailedAction(null);
+                  setError(null);
                 }}
                 aria-label={`Edit ${meeting.name}`}
                 title="Edit meeting"
@@ -149,7 +155,7 @@ export function MeetingDetail({ id }: { id: string }) {
                 </svg>
                 Edit
               </button>
-              <DeleteMeetingButton meeting={meeting} onDelete={deleteMeeting} />
+              <DeleteMeetingButton meeting={meeting} onDelete={handleDelete} />
             </div>
           </div>
 

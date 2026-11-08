@@ -2,13 +2,10 @@
 
 import Link from "next/link";
 import { useState, type FormEvent, type KeyboardEvent } from "react";
-import type { Meeting } from "@/lib/meetings";
-import { sortTags } from "@/lib/tags";
-import { useTags } from "@/lib/use-tags";
+import type { MeetingDraft } from "@/lib/meetings";
+import { sortTags, useTags } from "@/lib/tags";
 import { DatePicker } from "./date-picker";
 import { buttonPrimary, buttonSecondary, input, label, textLink } from "./ui";
-
-type MeetingDraft = Omit<Meeting, "id">;
 
 function todayAsDateInputValue(): string {
   const now = new Date();
@@ -21,7 +18,9 @@ const labelClass = `mb-1.5 block ${label}`;
 
 /**
  * Form for logging a meeting. Pass `initial` to edit an existing meeting instead: the
- * fields start with its values and aren't cleared after saving.
+ * fields start with its values and aren't cleared after saving. `onSubmit` saves the draft and
+ * resolves to whether it worked; the submit button is disabled meanwhile, and the form keeps
+ * its values if saving fails.
  */
 export function MeetingForm({
   onSubmit,
@@ -29,7 +28,7 @@ export function MeetingForm({
   submitLabel = "Log meeting",
   onCancel,
 }: {
-  onSubmit: (draft: MeetingDraft) => void;
+  onSubmit: (draft: MeetingDraft) => Promise<boolean>;
   initial?: MeetingDraft;
   submitLabel?: string;
   onCancel?: () => void;
@@ -40,6 +39,7 @@ export function MeetingForm({
   const [participantInput, setParticipantInput] = useState("");
   const [notes, setNotes] = useState(initial?.notes ?? "");
   const [tagIds, setTagIds] = useState<string[]>(initial?.tagIds ?? []);
+  const [saving, setSaving] = useState(false);
   const tags = sortTags(useTags());
 
   function toggleTag(tagId: string) {
@@ -68,8 +68,9 @@ export function MeetingForm({
     }
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (saving) return;
     // Include a participant that was typed but not yet added.
     const pending = participantInput.trim();
     const allParticipants =
@@ -80,14 +81,16 @@ export function MeetingForm({
     // Drop IDs of tags that no longer exist.
     const existingTagIds = tagIds.filter((id) => tags.some((tag) => tag.id === id));
 
-    onSubmit({
+    setSaving(true);
+    const saved = await onSubmit({
       name: name.trim(),
       date,
       participants: allParticipants,
       notes: notes.trim(),
       tagIds: existingTagIds,
     });
-    if (initial) return;
+    setSaving(false);
+    if (!saved || initial) return;
 
     setName("");
     setDate(todayAsDateInputValue());
@@ -225,13 +228,14 @@ export function MeetingForm({
       </div>
 
       <div className="flex gap-2 border-t border-line pt-4">
-        <button type="submit" className={`${buttonPrimary} px-4`}>
-          {submitLabel}
+        <button type="submit" disabled={saving} className={`${buttonPrimary} px-4`}>
+          {saving ? "Saving…" : submitLabel}
         </button>
         {onCancel && (
           <button
             type="button"
             onClick={onCancel}
+            disabled={saving}
             className={`${buttonSecondary} px-4`}
           >
             Cancel

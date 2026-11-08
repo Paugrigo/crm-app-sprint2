@@ -40,7 +40,7 @@ The existing features below must keep working on top of Supabase.
 - `/meetings/[id]`: one page per meeting (tab title = meeting name); Edit swaps in the prefilled form (Save changes / Cancel); delete returns to `/`. Unknown or other users' IDs show "Meeting not found".
 - `/tags`: create tags (names unique per user, ignoring case), list sorted by name with meeting counts, rename in place (Enter saves, Escape cancels), delete (removes the tag from its meetings, keeps the meetings).
 - `/statistics`: overview cards, meetings per month (12 months), most-met and not-met-lately people, meetings by tag and weekday. Only meetings dated up to today count. Plain CSS bars, no chart library.
-- `/settings`: Light / Dark / System theme; backup export/import as JSON (import merges into the signed-in user's data).
+- `/settings`: Light / Dark / System theme (saved per user); backup export/import as JSON (import merges into the signed-in user's data).
 - Sidebar on every private page: Log a meeting button, All meetings, Tags, Statistics, 8 most recent meetings, Settings, and (new) the signed-in email and Sign out. Collapses to a top bar on phones.
 - **No blank screens:** empty states and not-found states always show a readable message; not-found states link back to `/`.
 
@@ -57,35 +57,37 @@ Out of scope this sprint: filtering meetings by tag, password reset, OAuth provi
 - **Never commit on your own.** Only commit (and push or open a PR) when the user explicitly asks. Approving a plan that mentions committing doesn't count. When work is done, leave the changes uncommitted and say they're ready to commit.
 - **No new libraries without asking first** (runtime or dev). Propose the library and the reason, then wait for approval. `@supabase/supabase-js` and `@supabase/ssr` are the planned additions for this sprint; still confirm with the user before installing them.
 - **No API routes for data access.** Read and write through the Supabase client (Server Components, Server Actions, or Client Components), relying on RLS for access control.
-- **Secrets stay out of git.** Supabase URL and anon/publishable key go in `.env.local` (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`); `.env*` is already gitignored. Commit a `.env.example` with empty values. Never use the service role key in the app.
+- **Secrets stay out of git.** Supabase URL and publishable key go in `.env.local` (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`); `.env*` is already gitignored. Commit a `.env.example` with empty values. Never use the service role key in the app.
 
 ## Auth
 
-- Use `@supabase/ssr` with three helpers: a browser client, a server client (reads/writes cookies via `next/headers`), and the session-refresh helper used by the proxy.
-- **Proxy** (`proxy.ts`, Next.js 16's replacement for `middleware.ts`; check the docs in `node_modules/next/dist/docs/`) refreshes the session cookie on every request and redirects signed-out visitors on private routes to `/sign-in`.
-- **Don't rely on the proxy alone.** Every private page (or the private route group's layout) also checks the user on the server and calls `redirect("/sign-in")` if there is none.
-- On the server, verify the user with `supabase.auth.getUser()` (or `getClaims()`), never `getSession()`, which trusts the cookie without validating it.
-- Sign in, sign up, and sign out are Server Actions. Show readable errors (wrong password, email already registered, unconfirmed email).
-- If email confirmation is on in the Supabase project, sign-up shows a "check your email" message; for local testing it can be turned off in the dashboard.
+- `@supabase/ssr` helpers in `lib/supabase/`: `client.ts` (browser client), `server.ts` (`createClient()` for Server Components/Actions/Route Handlers, plus `getCurrentUser()`), `proxy.ts` (`updateSession()`).
+- **Proxy** (`proxy.ts`, Next.js 16's replacement for `middleware.ts`) runs before every request except static assets: refreshes the session cookies, redirects signed-out visitors on any non-public path to `/sign-in?next=<path>` (HTTP 307), and sends signed-in visitors from `/sign-in`/`/sign-up` to `/`. Public paths: `/sign-in`, `/sign-up`, `/auth/confirm`.
+- **Second check:** `app/(private)/layout.tsx` verifies the user on the server (`getCurrentUser()`) and redirects if there is none. Keep both.
+- On the server, verify with `getClaims()` (or `getUser()`), never `getSession()`.
+- Sign in, sign up, and sign out are Server Actions (`lib/auth-actions.ts`) returning readable errors. After success the client does a **full page load** (`window.location.assign`), not `router.push`: it clears the in-memory data stores and the pages Next.js keeps alive, so one user's data can't flash for the next.
+- Email confirmation is **on** in the project: sign-up shows "check your email", and the email link lands on `app/auth/confirm/route.ts`, which exchanges it for a session. The link must be opened in the same browser. Supabase's built-in email sender is rate-limited (a few emails per hour); for testing, create users in the dashboard (Authentication → Add user, with Auto Confirm) or turn confirmation off.
 
 ## Data model (Supabase)
 
-Schema changes live as SQL migrations in `supabase/migrations/` (timestamped files) so the database can be recreated. Every table below has RLS **enabled** and four policies (select / insert / update / delete) with `user_id = auth.uid()` in `using` and `with check`.
+Schema changes live as SQL migrations in `supabase/migrations/` (timestamped files) so the database can be recreated; the schema is in `20261108120000_initial_schema.sql`. Never edit an applied migration; add a new one. Every user-data table has a `user_id` (defaults to `auth.uid()`, cascades when the user is deleted), RLS **enabled**, and policies for the `authenticated` role only, comparing `(select auth.uid()) = user_id`. The `anon` role has no table privileges.
 
-- `meetings`: `id uuid pk default gen_random_uuid()`, `user_id uuid not null default auth.uid() references auth.users on delete cascade`, `name text not null`, `date date not null`, `participants text[] not null default '{}'`, `notes text not null default ''`, `created_at timestamptz default now()`, `updated_at timestamptz`.
-- `tags`: `id`, `user_id`, `name text not null`; unique index on `(user_id, lower(name))`.
-- `meeting_tags`: `meeting_id` → `meetings` (on delete cascade), `tag_id` → `tags` (on delete cascade), `user_id`; primary key `(meeting_id, tag_id)`. Deleting a tag removes it from meetings automatically.
-- `user_settings`: `user_id pk`, `theme text check (theme in ('light','dark','system')) default 'system'`.
-- Index every `user_id` and foreign-key column.
+- `meetings`: `id`, `user_id`, `name` (1–200 chars), `date`, `participants text[]`, `notes`, `created_at`, `updated_at` (set by trigger). Indexed on `(user_id, date desc, created_at desc)`.
+- `tags`: `id`, `user_id`, `name` (1–40 chars); unique per user ignoring case (unique index on `(user_id, lower(name))`, so a duplicate insert fails with Postgres error `23505`).
+- `meeting_tags`: `meeting_id`, `tag_id` (both `on delete cascade`, so deleting a tag takes it off meetings), `user_id`; primary key `(meeting_id, tag_id)`. The insert policy also requires the meeting and the tag to be the user's own. No update policy or grant: change a meeting's tags by deleting and inserting links (no upserts).
+- `user_settings`: `user_id` (primary key), `theme` (`light` / `dark` / `system`, default `system`). A missing row means defaults.
 
-Data access goes through `lib/` modules (e.g. `lib/meetings.ts`, `lib/tags.ts`, `lib/settings.ts`) rather than ad-hoc queries in components. Never filter by user only in the app; RLS is the guarantee, app-side filters are just for clarity.
+Never rely on app-side filtering for privacy; RLS is the guarantee.
 
-### Migrating from the localStorage version
+### Reading and writing data in the app
 
-- Remove all `localStorage`/`sessionStorage` use (`lib/meetings.ts`, `lib/tags.ts`, `lib/theme.ts`, `use-*` hooks, `requestPersistentStorage()` in `sidebar.tsx`).
-- After a create, edit, or delete, refresh data with `revalidatePath`/`refresh()` (Server Actions) or by refetching, so pages kept alive by Cache Components (React `<Activity>`, see `node_modules/next/dist/docs/01-app/02-guides/preserving-ui-state.md`) don't show stale data.
-- Theme: read the user's `user_settings.theme` on the server and set `data-theme` on `<html>` in the root layout, so there's no flash of wrong colors. Signed-out pages use System.
-- Existing users' browser data is not migrated automatically; they can export a backup from the old version and import it via Settings.
+- Data is read and written from Client Components with the browser Supabase client, as the signed-in user, so RLS applies. Each table has a module with its CRUD functions: `lib/meetings.ts` (`useMeetings`, `createMeeting`, `updateMeeting`, `deleteMeeting`), `lib/tags.ts` (`useTags`, `createTag`, `renameTag`, `deleteTag`), `lib/theme.ts` (`useThemePreference`, `saveThemePreference`), `lib/backup.ts` (`saveImport`). Don't query Supabase from components directly.
+- Reads go through `createRemoteStore()` (`lib/remote-store.ts`): one in-memory copy per table shared by all components via `useSyncExternalStore`. Every mutation refetches its store afterwards (also on failure), so every mounted page, including ones Next.js keeps hidden (React `<Activity>`, see `node_modules/next/dist/docs/01-app/02-guides/preserving-ui-state.md`), shows current data. Never copy data into `useState`. Stores also refetch when the tab becomes visible again (at most every 30s), which picks up changes from other tabs.
+- Components that read stores call `use(browser(...))` and render inside `<Suspense>`. The first load suspends; a failed load throws to `app/error.tsx` ("Couldn't load your data" + Try again). Failed mutations show an inline error (`describeError()` for the message).
+- Nothing is stored in `localStorage`/`sessionStorage`. One exception to "Supabase only": the theme choice is also copied into a `crm-theme` cookie (`lib/theme-cookie.ts`) so an inline script in the root layout can apply it before the first paint (no flash). `user_settings.theme` stays the source of truth: `components/theme-applier.tsx` re-applies it (and rewrites the cookie) after it loads, and sign-out deletes the cookie.
+- Stores always call `use()` (also after loading, with an already-resolved promise): React requires the same `use()` calls in the render after a suspension.
+- `getCurrentUser()` calls `connection()` first: session checks use `Date.now()`, which Next.js forbids during prerendering.
+- Old browser-only data isn't migrated automatically: export a backup from the old version and import it in Settings.
 
 ## Theming
 
@@ -99,6 +101,11 @@ Data access goes through `lib/` modules (e.g. `lib/meetings.ts`, `lib/tags.ts`, 
 - `npm run dev`: dev server at http://localhost:3000
 - `npm run build`: production build
 - `npm run lint`: ESLint
+- Supabase CLI (v3, installed via Homebrew; project linked as `ddsulpggdjayrwquvrxy`). It targets a local Docker database by default, so pass `--remote` for the linked project:
+  - `supabase migration new <name>`: create a migration file
+  - `supabase db push --remote --dry-run`, then `supabase db push --remote`: apply pending migrations (ask the user before pushing)
+  - `supabase migration list --remote`: what's applied
+  - `supabase db query --remote --read-only "<sql>"`: inspect the database
 
 ## Verification checklist (run before calling the sprint done)
 
@@ -112,14 +119,15 @@ Data access goes through `lib/` modules (e.g. `lib/meetings.ts`, `lib/tags.ts`, 
 
 ## Project structure
 
-- `app/`: App Router pages and layouts (`layout.tsx`, `not-found.tsx`, `globals.css`)
-  - `sign-in/`, `sign-up/`: public auth pages
-  - private pages: `page.tsx` (`/`), `meetings/new`, `meetings/[id]`, `tags`, `statistics`, `settings` (consider grouping them in a `(private)` route group whose layout checks the user and renders the sidebar)
-- `proxy.ts`: session refresh and redirect for signed-out visitors
-- `components/`: UI components (`meeting-log`, `meeting-form`, `meeting-detail`, `meeting-list`, `new-meeting`, `date-picker`, `delete-button`, `delete-meeting-button`, `tags-manager`, `meeting-tags`, `statistics`, `settings`, `sidebar`, `page-header`, `ui.ts`)
-- `lib/supabase/`: browser client, server client, and proxy session helper
-- `lib/`: data access (`meetings.ts`, `tags.ts`, `settings.ts`), `statistics.ts` (pure `computeStatistics()`), `backup.ts` (backup format), `format-date.ts`
-- `supabase/migrations/`: SQL schema, RLS policies, indexes
+- `app/`: `layout.tsx` (document only), `not-found.tsx`, `error.tsx` (data load errors), `globals.css`
+  - `(auth)/`: public pages without the sidebar: `sign-in/`, `sign-up/` (both render `components/auth-form.tsx`)
+  - `(private)/`: `layout.tsx` (server user check, sidebar, theme), `page.tsx` (`/`), `meetings/new`, `meetings/[id]`, `tags`, `statistics`, `settings`. Route groups don't change URLs.
+  - `auth/confirm/route.ts`: email confirmation link handler
+- `proxy.ts`: server-side gate (see Auth)
+- `components/`: `meeting-log`, `meeting-form`, `meeting-detail`, `meeting-list`, `new-meeting`, `date-picker`, `delete-button`, `delete-meeting-button`, `tags-manager`, `meeting-tags`, `statistics`, `settings`, `sidebar` (menu, signed-in email, Sign out), `auth-form`, `theme-applier`, `inline-script` (pre-paint theme script), `page-header`, `ui.ts`
+- `lib/supabase/`: `env.ts`, `client.ts`, `server.ts`, `proxy.ts`
+- `lib/`: `auth-actions.ts`, `remote-store.ts`, data modules (`meetings.ts`, `tags.ts`, `theme.ts`, `backup.ts`), `theme-cookie.ts`, `statistics.ts` (pure `computeStatistics()`), `format-date.ts`
+- `supabase/`: `config.toml` (CLI), `migrations/` (schema, RLS policies, indexes)
 - `docs/screenshot.png`: README screenshot; retake when the look changes noticeably
 
 ## Keeping this file current

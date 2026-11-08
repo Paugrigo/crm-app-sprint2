@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { InlineScript } from "@/components/inline-script";
-import { Sidebar } from "@/components/sidebar";
-import { THEME_SCRIPT } from "@/lib/theme";
+import { THEME_SCRIPT } from "@/lib/theme-cookie";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -20,6 +19,7 @@ export const metadata: Metadata = {
   description: "A simple CRM for logging meetings, participants, and notes.",
 };
 
+// The menu sidebar lives in app/(private)/layout.tsx; sign-in and sign-up pages don't have it.
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     // suppressHydrationWarning: THEME_SCRIPT sets data-theme on <html> before React hydrates.
@@ -31,10 +31,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       <head>
         <InlineScript html={THEME_SCRIPT} />
       </head>
-      <body className="min-h-full flex flex-col md:flex-row">
-        <Sidebar />
-        <div className="flex min-w-0 flex-1 flex-col">{children}</div>
-      </body>
+      <body className="min-h-full flex flex-col md:flex-row">{children}</body>
     </html>
   );
 }

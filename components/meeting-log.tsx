@@ -2,31 +2,36 @@
 
 import { use, useState } from "react";
 import { browser } from "react-dom";
-import { saveMeetings } from "@/lib/meetings";
-import { useMeetings } from "@/lib/use-meetings";
+import { deleteMeeting, useMeetings } from "@/lib/meetings";
+import { describeError } from "@/lib/remote-store";
 import { MeetingList } from "./meeting-list";
 import { errorBox } from "./ui";
 
-// Browser-only: meetings come from localStorage, which doesn't exist during prerendering.
+// Browser-only: meetings are loaded from Supabase with the signed-in user's session.
 // Render inside a <Suspense> boundary.
 export function MeetingLog() {
-  use(browser("Meetings are stored in localStorage."));
+  use(browser("Meetings are loaded from Supabase in the browser."));
 
   const meetings = useMeetings();
-  const [saveFailed, setSaveFailed] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  function deleteMeeting(id: string) {
-    setSaveFailed(!saveMeetings(meetings.filter((meeting) => meeting.id !== id)));
+  async function handleDelete(id: string) {
+    setError(null);
+    try {
+      await deleteMeeting(id);
+    } catch (e) {
+      setError(`Couldn't delete the meeting. ${describeError(e)}`);
+    }
   }
 
   return (
     <section>
-      {saveFailed && (
+      {error && (
         <p role="alert" className={`${errorBox} mb-4`}>
-          Couldn&apos;t save your change: browser storage is unavailable or full.
+          {error}
         </p>
       )}
-      <MeetingList meetings={meetings} onDelete={deleteMeeting} />
+      <MeetingList meetings={meetings} onDelete={handleDelete} />
     </section>
   );
 }

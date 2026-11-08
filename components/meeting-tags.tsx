@@ -1,7 +1,6 @@
 "use client";
 
-import { sortTags } from "@/lib/tags";
-import { useTags } from "@/lib/use-tags";
+import { sortTags, useTags } from "@/lib/tags";
 
 /**
  * A meeting's tags as small labels, sorted by name. Skips IDs of tags that no longer exist,
