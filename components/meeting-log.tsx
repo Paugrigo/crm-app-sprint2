@@ -4,29 +4,36 @@ import { useSearchParams } from "next/navigation";
 import { use, useDeferredValue, useEffect, useRef, useState } from "react";
 import { browser } from "react-dom";
 import {
-  deleteMeeting,
+  NO_FILTERS,
+  readMeetingFilters,
   SEARCH_MAX_LENGTH,
-  useMeetingSearch,
-  useMeetings,
-} from "@/lib/meetings";
+  toMeetingSearch,
+  writeMeetingFilters,
+  type MeetingFilters,
+  type MeetingSearch,
+} from "@/lib/meeting-filters";
+import { deleteMeeting, useMeetingSearch, useMeetings } from "@/lib/meetings";
 import { describeError } from "@/lib/remote-store";
+import { useTags } from "@/lib/tags";
+import { MeetingFilterBar } from "./meeting-filter-bar";
 import { MeetingList } from "./meeting-list";
 import { errorBox, input } from "./ui";
 
 /** How long to wait after the last keystroke before searching. */
 const SEARCH_DELAY_MS = 250;
 
-/** The search text in the URL (`?q=`), trimmed; "" when not searching. */
-function useUrlQuery(): string {
-  return (useSearchParams().get("q") ?? "").trim().slice(0, SEARCH_MAX_LENGTH);
+/** Applies a change to the filters in the URL, starting from what the URL holds right now. */
+function updateFilters(patch: Partial<MeetingFilters>) {
+  writeMeetingFilters({
+    ...readMeetingFilters(new URLSearchParams(window.location.search)),
+    ...patch,
+  });
 }
 
-/** Puts the search text in the URL without a navigation or a new history entry per keystroke. */
-function writeUrlQuery(query: string) {
-  const url = new URL(window.location.href);
-  if (query) url.searchParams.set("q", query);
-  else url.searchParams.delete("q");
-  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+function isFiltered(search: MeetingSearch): boolean {
+  return Boolean(
+    search.query || search.tagIds.length || search.people.length || search.from || search.to,
+  );
 }
 
 // Browser-only: meetings are loaded from Supabase with the signed-in user's session.
@@ -34,11 +41,19 @@ function writeUrlQuery(query: string) {
 export function MeetingLog() {
   use(browser("Meetings are loaded from Supabase in the browser."));
 
-  const urlQuery = useUrlQuery();
+  const filters = readMeetingFilters(useSearchParams());
+  // Ignore tags that no longer exist (e.g. deleted since the link was bookmarked).
+  const tags = useTags();
+  const search = toMeetingSearch({
+    ...filters,
+    tagIds: filters.tagIds.filter((id) => tags.some((t) => t.id === id)),
+  });
   // While the next results load, keep showing the current ones (dimmed) instead of the
-  // Suspense fallback.
-  const query = useDeferredValue(urlQuery);
-  const loading = query !== urlQuery;
+  // Suspense fallback. Compared as JSON, since a new object is built on every render.
+  const searchKey = JSON.stringify(search);
+  const shownKey = useDeferredValue(searchKey);
+  const shown = JSON.parse(shownKey) as MeetingSearch;
+  const loading = shownKey !== searchKey;
   const [error, setError] = useState<string | null>(null);
 
   async function handleDelete(id: string) {
@@ -52,18 +67,16 @@ export function MeetingLog() {
 
   return (
     <section>
-      <SearchBox urlQuery={urlQuery} loading={loading} />
+      <SearchBox urlQuery={filters.query} loading={loading} />
+      <MeetingFilterBar filters={filters} onChange={updateFilters} />
       {error && (
         <p role="alert" className={`${errorBox} mb-4`}>
           {error}
         </p>
       )}
-      <div
-        aria-busy={loading}
-        className={`transition-opacity ${loading ? "opacity-60" : ""}`}
-      >
-        {query ? (
-          <SearchResults query={query} onDelete={handleDelete} />
+      <div aria-busy={loading} className={`transition-opacity ${loading ? "opacity-60" : ""}`}>
+        {isFiltered(shown) ? (
+          <SearchResults search={shown} onDelete={handleDelete} />
         ) : (
           <AllMeetings onDelete={handleDelete} />
         )}
@@ -77,13 +90,22 @@ function AllMeetings({ onDelete }: { onDelete: (id: string) => void }) {
 }
 
 /** Only the matching meetings, as returned by the database. */
-function SearchResults({ query, onDelete }: { query: string; onDelete: (id: string) => void }) {
+function SearchResults({
+  search,
+  onDelete,
+}: {
+  search: MeetingSearch;
+  onDelete: (id: string) => void;
+}) {
   return (
     <MeetingList
-      meetings={useMeetingSearch(query)}
+      meetings={useMeetingSearch(search)}
       onDelete={onDelete}
-      query={query}
-      onClearQuery={() => writeUrlQuery("")}
+      search={{
+        query: search.query,
+        filtered: isFiltered({ ...search, query: "" }),
+        onClear: () => writeMeetingFilters(NO_FILTERS),
+      }}
     />
   );
 }
@@ -93,8 +115,8 @@ function SearchBox({ urlQuery, loading }: { urlQuery: string; loading: boolean }
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // The URL can change without typing here (Back/Forward, "All meetings" in the menu, Clear
-  // search): show its search text then. Adjusting state while rendering is React's pattern
-  // for this; an effect would show the old text for a frame.
+  // all): show its search text then. Adjusting state while rendering is React's pattern for
+  // this; an effect would show the old text for a frame.
   const [shownUrlQuery, setShownUrlQuery] = useState(urlQuery);
   if (urlQuery !== shownUrlQuery) {
     setShownUrlQuery(urlQuery);
@@ -106,7 +128,7 @@ function SearchBox({ urlQuery, loading }: { urlQuery: string; loading: boolean }
   function search(value: string, delay: number) {
     setText(value);
     clearTimeout(timer.current);
-    timer.current = setTimeout(() => writeUrlQuery(value.trim()), delay);
+    timer.current = setTimeout(() => updateFilters({ query: value.trim() }), delay);
   }
 
   return (
@@ -117,7 +139,7 @@ function SearchBox({ urlQuery, loading }: { urlQuery: string; loading: boolean }
         event.preventDefault();
         search(text, 0);
       }}
-      className="relative mb-4"
+      className="relative mb-3"
     >
       <label htmlFor="meeting-search" className="sr-only">
         Search meetings

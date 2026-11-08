@@ -12,35 +12,41 @@ function weekday(date: string): string {
 }
 
 /**
- * Meetings as rows, newest first. With `query`, they're search results: the header counts
- * matches, and an empty list says nothing matched (with a button that calls `onClearQuery`).
+ * Meetings as rows, newest first. With `search`, they're search results: the header counts
+ * matches, and an empty list says nothing matched (with a button that calls `search.onClear`).
  */
 export function MeetingList({
   meetings,
   onDelete,
-  query,
-  onClearQuery,
+  search,
 }: {
   meetings: Meeting[];
   onDelete: (id: string) => void;
-  query?: string;
-  onClearQuery?: () => void;
+  /** Set when the list is filtered: the search text ("" if none) and whether filters are set. */
+  search?: { query: string; filtered: boolean; onClear: () => void };
 }) {
-  if (meetings.length === 0 && query) {
+  if (meetings.length === 0 && search) {
+    const { query, filtered, onClear } = search;
     return (
       <div className={emptyState}>
         <p className={label}>No matches</p>
         <p className="mt-2 font-medium text-fg">
-          No meetings match &ldquo;{query}&rdquo;
+          {query ? (
+            <>
+              No meetings match &ldquo;{query}&rdquo;{filtered && " with these filters"}
+            </>
+          ) : (
+            "No meetings match these filters"
+          )}
         </p>
         <p className="mt-1 text-sm text-muted">
-          Search looks in meeting names, participants, notes, and tag names.
+          {query
+            ? "Search looks in meeting names, participants, notes, and tag names."
+            : "Try a wider date range, or fewer tags or people."}
         </p>
-        {onClearQuery && (
-          <button type="button" onClick={onClearQuery} className={`${buttonSecondary} mt-4`}>
-            Clear search
-          </button>
-        )}
+        <button type="button" onClick={onClear} className={`${buttonSecondary} mt-4`}>
+          {query && filtered ? "Clear search and filters" : query ? "Clear search" : "Clear filters"}
+        </button>
       </div>
     );
   }
@@ -64,9 +70,9 @@ export function MeetingList({
   return (
     <section className={`${panel} overflow-hidden`}>
       <div className={panelHeader}>
-        <h2 className={label}>{query ? "Search results" : "Meetings"}</h2>
+        <h2 className={label}>{search ? "Search results" : "Meetings"}</h2>
         <span className="font-mono text-xs text-muted">
-          {query
+          {search
             ? `${meetings.length} ${meetings.length === 1 ? "match" : "matches"}`
             : `${meetings.length} total`}
         </span>

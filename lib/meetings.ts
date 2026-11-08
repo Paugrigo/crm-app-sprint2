@@ -1,6 +1,7 @@
 // Meetings, stored in Supabase (tables `meetings` and `meeting_tags`). Row Level Security limits
 // every query to the signed-in user's rows. Browser-only: see lib/remote-store.ts.
 
+import type { MeetingSearch } from "./meeting-filters";
 import { getSupabase } from "./supabase/client";
 import { createKeyedRemoteStore, createRemoteStore } from "./remote-store";
 
@@ -90,16 +91,23 @@ const store = createRemoteStore(fetchMeetings);
 /** The signed-in user's meetings, newest first. Suspends until loaded. */
 export const useMeetings = store.useValue;
 
-/** Longest search text sent to the database; longer input is cut off. */
-export const SEARCH_MAX_LENGTH = 200;
-
 /**
- * Meetings matching `query`, newest first, found by the database (the search_meetings
- * function; see supabase/migrations): only the matching rows are downloaded.
+ * Meetings matching a search (text and filters), newest first, found by the database (the
+ * search_meetings function; see supabase/migrations): only the matching rows are downloaded.
+ * Takes the search as JSON because the results are cached per search (see searchStore).
  */
-async function searchMeetings(query: string): Promise<Meeting[]> {
+async function searchMeetings(searchJson: string): Promise<Meeting[]> {
+  const search = JSON.parse(searchJson) as MeetingSearch;
   const { data, error } = await getSupabase()
-    .rpc("search_meetings", { search: query })
+    .rpc("search_meetings", {
+      search: search.query || null,
+      tag_ids: search.tagIds.length > 0 ? search.tagIds : null,
+      tags_match_all: search.tagsMatchAll,
+      participants: search.people.length > 0 ? search.people : null,
+      participants_match_all: search.peopleMatchAll,
+      date_from: search.from || null,
+      date_to: search.to || null,
+    })
     // PostgREST can only order a function's results by selected columns, so created_at is
     // selected here too (fromRow ignores it).
     .select(`${MEETING_COLUMNS}, created_at`)
@@ -114,10 +122,12 @@ async function searchMeetings(query: string): Promise<Meeting[]> {
 const searchStore = createKeyedRemoteStore(searchMeetings);
 
 /**
- * The signed-in user's meetings whose name, notes, participants, or tag names contain `query`
- * (case-insensitive), newest first. Pass a trimmed, non-empty query. Suspends until loaded.
+ * The signed-in user's meetings matching `search` (see lib/meeting-filters.ts), newest first.
+ * Suspends until loaded.
  */
-export const useMeetingSearch = searchStore.useValue;
+export function useMeetingSearch(search: MeetingSearch): Meeting[] {
+  return searchStore.useValue(JSON.stringify(search));
+}
 
 /** Reloads meetings and any search results on screen (e.g. after a change). Never rejects. */
 export async function refreshMeetings() {
