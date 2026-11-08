@@ -2,12 +2,11 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Suspense, use, useEffect, useState } from "react";
+import { Suspense, use, useState } from "react";
 import { browser } from "react-dom";
+import { signOut } from "@/lib/auth-actions";
 import { formatMeetingDate } from "@/lib/format-date";
-import { requestPersistentStorage } from "@/lib/meetings";
-import { subscribeToTheme } from "@/lib/theme";
-import { useMeetings } from "@/lib/use-meetings";
+import { useMeetings } from "@/lib/meetings";
 import { buttonPrimary, buttonSecondary, label } from "./ui";
 
 const RECENT_LIMIT = 8;
@@ -21,19 +20,12 @@ const linkActive =
 
 /**
  * App menu: a left sidebar on wider screens, a top bar with a Menu toggle on phones.
- * Rendered by the root layout, so it stays mounted across navigations.
+ * Rendered by the private layout (app/(private)/layout.tsx), so it stays mounted across
+ * navigations. `email` is the signed-in user's, read on the server.
  */
-export function Sidebar() {
+export function Sidebar({ email }: { email: string }) {
   const [open, setOpen] = useState(false);
   const close = () => setOpen(false);
-
-  // The sidebar is on every page, so this runs once on startup whichever page loads first.
-  useEffect(() => {
-    requestPersistentStorage();
-  }, []);
-
-  // Apply theme changes made in other tabs (subscribing is enough; there's nothing to render).
-  useEffect(() => subscribeToTheme(() => {}), []);
 
   return (
     <aside className="border-b border-line bg-surface md:sticky md:flex md:flex-col md:top-0 md:h-screen md:w-60 md:shrink-0 md:overflow-y-auto md:border-b-0 md:border-r">
@@ -62,8 +54,8 @@ export function Sidebar() {
         aria-label="Main"
         className={`${open ? "flex" : "hidden"} flex-col px-3 pb-4 md:flex md:flex-1 md:pt-4 md:pb-4`}
       >
-        {/* The active link depends on the URL, and recent meetings on localStorage; neither
-            is known while prerendering, so show plain links until the browser takes over. */}
+        {/* The active link depends on the URL, and recent meetings are loaded from Supabase in
+            the browser; show plain links until both are known. */}
         <Suspense
           fallback={
             <>
@@ -74,6 +66,7 @@ export function Sidebar() {
         >
           <SidebarContent onNavigate={close} />
         </Suspense>
+        <Account email={email} />
       </nav>
     </aside>
   );
@@ -90,7 +83,51 @@ function SidebarContent({ onNavigate }: { onNavigate: () => void }) {
   );
 }
 
-/** Pinned to the bottom of the sidebar on wider screens; last item in the phone menu. */
+/** The signed-in user's email and a Sign out button, at the very bottom of the menu. */
+function Account({ email }: { email: string }) {
+  const [pending, setPending] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  async function handleSignOut() {
+    setPending(true);
+    setFailed(false);
+    try {
+      const { ok } = await signOut();
+      if (!ok) throw new Error("Sign-out failed");
+      // A full page load (not router.push) on purpose: it clears all in-memory data, including
+      // pages Next.js keeps alive in the background, so the next user can't see this user's.
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+      window.location.assign("/sign-in");
+    } catch {
+      setFailed(true);
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="mt-3 border-t border-line px-3 pt-3">
+      <p className={label}>Signed in as</p>
+      <p className="mt-1 truncate text-sm text-fg" title={email}>
+        {email}
+      </p>
+      <button
+        type="button"
+        onClick={handleSignOut}
+        disabled={pending}
+        className={`${buttonSecondary} mt-2 w-full`}
+      >
+        {pending ? "Signing out…" : "Sign out"}
+      </button>
+      {failed && (
+        <p role="alert" className="mt-2 font-mono text-xs text-danger">
+          Couldn&apos;t sign out. Check your connection and try again.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Pinned to the bottom of the sidebar on wider screens (above the account); in the phone menu too. */
 function SettingsLink({
   pathname,
   onNavigate,
@@ -194,7 +231,7 @@ function MainLinks({
 }
 
 function RecentMeetings({ pathname, onNavigate }: { pathname: string; onNavigate: () => void }) {
-  use(browser("Meetings are stored in localStorage."));
+  use(browser("Meetings are loaded from Supabase in the browser."));
   const meetings = useMeetings();
 
   // Newest first, like the meeting list; ISO dates sort correctly as strings.

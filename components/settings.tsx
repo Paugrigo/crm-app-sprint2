@@ -2,13 +2,18 @@
 
 import { use, useLayoutEffect, useRef, useState, type ChangeEvent } from "react";
 import { browser } from "react-dom";
-import { fromBackup, mergeBackup, toBackup } from "@/lib/backup";
-import { saveMeetings } from "@/lib/meetings";
-import { saveTags } from "@/lib/tags";
-import { saveThemePreference, type ThemePreference } from "@/lib/theme";
-import { useMeetings } from "@/lib/use-meetings";
-import { useTags } from "@/lib/use-tags";
-import { useThemePreference } from "@/lib/use-theme";
+import {
+  fromBackup,
+  localizeBackup,
+  mergeBackup,
+  saveImport,
+  toBackup,
+  type BackupData,
+} from "@/lib/backup";
+import { useMeetings } from "@/lib/meetings";
+import { describeError } from "@/lib/remote-store";
+import { useTags } from "@/lib/tags";
+import { saveThemePreference, useThemePreference, type ThemePreference } from "@/lib/theme";
 import { buttonSecondary, label, panel, panelHeader } from "./ui";
 
 const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
@@ -29,9 +34,10 @@ function statusClass(status: Status): string {
   return `mt-3 font-mono text-xs ${status.kind === "error" ? "text-danger" : "text-up"}`;
 }
 
-// Browser-only: settings and meetings live in localStorage. Render inside a <Suspense> boundary.
+// Browser-only: settings, meetings, and tags are loaded from Supabase with the signed-in user's
+// session. Render inside a <Suspense> boundary.
 export function Settings() {
-  use(browser("Settings are stored in localStorage."));
+  use(browser("Settings are loaded from Supabase in the browser."));
 
   return (
     <div className="space-y-4">
@@ -42,8 +48,22 @@ export function Settings() {
 }
 
 function AppearanceSettings() {
-  const theme = useThemePreference();
-  const [saveFailed, setSaveFailed] = useState(false);
+  const savedTheme = useThemePreference();
+  // The choice being saved, so the switch moves right away.
+  const [pendingTheme, setPendingTheme] = useState<ThemePreference | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const theme = pendingTheme ?? savedTheme;
+
+  async function chooseTheme(preference: ThemePreference) {
+    setPendingTheme(preference);
+    setError(null);
+    try {
+      await saveThemePreference(preference);
+    } catch (e) {
+      setError(`Couldn't save your choice; it applies until you reload. ${describeError(e)}`);
+    }
+    setPendingTheme(null);
+  }
 
   return (
     <section className={panel}>
@@ -67,7 +87,7 @@ function AppearanceSettings() {
                   name="theme"
                   value={option.value}
                   checked={theme === option.value}
-                  onChange={() => setSaveFailed(!saveThemePreference(option.value))}
+                  onChange={() => chooseTheme(option.value)}
                   className="sr-only"
                 />
                 {option.label}
@@ -75,10 +95,9 @@ function AppearanceSettings() {
             ))}
           </div>
         </fieldset>
-        {saveFailed && (
+        {error && (
           <p role="alert" className="mt-3 font-mono text-xs text-danger">
-            Couldn&apos;t save your choice: browser storage is unavailable. It applies until you
-            reload.
+            {error}
           </p>
         )}
       </div>
@@ -91,6 +110,7 @@ function BackupSettings() {
   const tags = useTags();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<Status | null>(null);
+  const [importing, setImporting] = useState(false);
 
   // Next.js keeps this page alive (hidden) after navigating away; don't show an old
   // result message when coming back.
@@ -126,7 +146,14 @@ function BackupSettings() {
       return;
     }
 
-    const merged = mergeBackup({ meetings, tags }, imported);
+    let localized: BackupData;
+    try {
+      localized = await localizeBackup({ meetings, tags }, imported);
+    } catch (e) {
+      setStatus({ kind: "error", text: `Couldn't import. ${describeError(e)}` });
+      return;
+    }
+    const merged = mergeBackup({ meetings, tags }, localized);
     const question =
       `Import ${plural(imported.meetings.length, "meeting")} and ${plural(imported.tags.length, "tag")}?` +
       (merged.updatedMeetings > 0
@@ -135,18 +162,21 @@ function BackupSettings() {
       " Everything else you have is kept.";
     if (!window.confirm(question)) return;
 
-    // Save tags first, so imported meetings never point at tags that weren't saved.
-    if (saveTags(merged.tags) && saveMeetings(merged.meetings)) {
+    setImporting(true);
+    setStatus(null);
+    try {
+      await saveImport({ meetings, tags }, merged);
       setStatus({
         kind: "success",
         text: `Imported ${plural(merged.newMeetings, "new meeting")}, updated ${merged.updatedMeetings}, and added ${plural(merged.newTags, "new tag")}.`,
       });
-    } else {
+    } catch (e) {
       setStatus({
         kind: "error",
-        text: "Couldn't import: browser storage is unavailable or full.",
+        text: `Couldn't finish the import; some items may have been saved. ${describeError(e)}`,
       });
     }
+    setImporting(false);
   }
 
   return (
@@ -156,8 +186,9 @@ function BackupSettings() {
       </div>
       <div className="p-4">
         <p className={descriptionClass}>
-          Meetings and tags are saved only in this browser. Download a backup to keep them safe
-          or move them to another browser or device, then import it there.
+          Your meetings and tags are saved to your account. Download a backup to keep your own
+          copy, or import one, including a backup from the earlier browser-only version of this
+          app.
         </p>
         <div className="mt-4 flex flex-wrap gap-2">
           <button
@@ -171,9 +202,10 @@ function BackupSettings() {
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
             className={buttonSecondary}
           >
-            Import from file…
+            {importing ? "Importing…" : "Import from file…"}
           </button>
           <input
             ref={fileInputRef}

@@ -5,8 +5,8 @@ import { use, type ReactNode } from "react";
 import { browser } from "react-dom";
 import { formatMeetingDate } from "@/lib/format-date";
 import { computeStatistics, daysBetween, localToday, type PersonStats } from "@/lib/statistics";
-import { useMeetings } from "@/lib/use-meetings";
-import { useTags } from "@/lib/use-tags";
+import { useMeetings } from "@/lib/meetings";
+import { useTags } from "@/lib/tags";
 import { buttonPrimary, emptyState, label, panel, panelHeader } from "./ui";
 
 const PEOPLE_SHOWN = 5;
@@ -18,9 +18,10 @@ function plural(count: number, word: string): string {
   return `${count} ${word}${count === 1 ? "" : "s"}`;
 }
 
-// Browser-only: meetings and tags live in localStorage. Render inside a <Suspense> boundary.
+// Browser-only: meetings and tags are loaded from Supabase with the signed-in user's session.
+// Render inside a <Suspense> boundary.
 export function Statistics() {
-  use(browser("Meetings are stored in localStorage."));
+  use(browser("Meetings are loaded from Supabase in the browser."));
 
   const meetings = useMeetings();
   const tags = useTags();

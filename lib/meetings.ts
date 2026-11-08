@@ -1,5 +1,8 @@
-// Meeting persistence. All meetings are stored as one JSON array in localStorage.
-// Browser-only: call these from Client Components after mount, never during prerendering.
+// Meetings, stored in Supabase (tables `meetings` and `meeting_tags`). Row Level Security limits
+// every query to the signed-in user's rows. Browser-only: see lib/remote-store.ts.
+
+import { getSupabase } from "./supabase/client";
+import { createRemoteStore } from "./remote-store";
 
 export type Meeting = {
   id: string;
@@ -8,19 +11,19 @@ export type Meeting = {
   date: string;
   participants: string[];
   notes: string;
-  /** IDs of the meeting's tags (see lib/tags.ts). May include IDs of tags that no longer exist. */
+  /** IDs of the meeting's tags (see lib/tags.ts). */
   tagIds: string[];
 };
 
-const STORAGE_KEY = "crm.meetings.v1";
+export type MeetingDraft = Omit<Meeting, "id">;
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 /**
- * Returns the value as a Meeting, or null if it isn't one. Meetings saved before tags
- * existed have no tagIds; they get an empty list, so no storage migration is needed.
+ * Returns the value as a Meeting, or null if it isn't one. Used for backup files. Meetings
+ * saved before tags existed have no tagIds; they get an empty list.
  */
 export function toMeeting(value: unknown): Meeting | null {
   if (typeof value !== "object" || value === null) return null;
@@ -49,83 +52,133 @@ export function toMeetings(values: unknown[]): Meeting[] {
   return values.map(toMeeting).filter((m): m is Meeting => m !== null);
 }
 
-function parseMeetings(raw: string | null): Meeting[] {
-  if (raw === null) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? toMeetings(parsed) : [];
-  } catch {
-    return [];
-  }
-}
+type MeetingRow = {
+  id: string;
+  name: string;
+  date: string;
+  participants: string[];
+  notes: string;
+  meeting_tags: { tag_id: string }[];
+};
 
-// localStorage is the single source of truth. Components read it through useMeetings()
-// (useSyncExternalStore), so every mounted page re-renders when meetings change, including
-// pages Next.js keeps hidden in the background between navigations.
+const MEETING_COLUMNS = "id, name, date, participants, notes, meeting_tags(tag_id)";
 
-const listeners = new Set<() => void>();
-const NO_MEETINGS: Meeting[] = [];
-let cachedRaw: string | null = null;
-let cachedMeetings: Meeting[] = NO_MEETINGS;
-
-/**
- * Returns saved meetings, or an empty list if storage is empty, unavailable, or corrupt.
- * Returns the same array until storage changes, as useSyncExternalStore requires.
- */
-export function loadMeetings(): Meeting[] {
-  let raw: string | null;
-  try {
-    raw = localStorage.getItem(STORAGE_KEY);
-  } catch {
-    raw = null;
-  }
-  if (raw !== cachedRaw) {
-    cachedRaw = raw;
-    cachedMeetings = parseMeetings(raw);
-  }
-  return cachedMeetings;
-}
-
-/** Server snapshot for useSyncExternalStore; meetings only exist in the browser. */
-export function loadMeetingsOnServer(): Meeting[] {
-  return NO_MEETINGS;
-}
-
-/** Calls listener whenever meetings change in this tab or another tab. */
-export function subscribeToMeetings(listener: () => void): () => void {
-  function handleStorage(event: StorageEvent) {
-    // key is null when another tab cleared all storage.
-    if (event.key === STORAGE_KEY || event.key === null) listener();
-  }
-  listeners.add(listener);
-  window.addEventListener("storage", handleStorage);
-  return () => {
-    listeners.delete(listener);
-    window.removeEventListener("storage", handleStorage);
+function fromRow(row: MeetingRow): Meeting {
+  return {
+    id: row.id,
+    name: row.name,
+    date: row.date,
+    participants: row.participants,
+    notes: row.notes,
+    tagIds: row.meeting_tags.map((link) => link.tag_id),
   };
 }
 
-/** Saves the full list of meetings. Returns false if storage is unavailable or full. */
-export function saveMeetings(meetings: Meeting[]): boolean {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(meetings));
-  } catch {
-    return false;
-  }
-  listeners.forEach((listener) => listener());
-  return true;
+async function fetchMeetings(): Promise<Meeting[]> {
+  const { data, error } = await getSupabase()
+    .from("meetings")
+    .select(MEETING_COLUMNS)
+    .order("date", { ascending: false })
+    .order("created_at", { ascending: false })
+    .returns<MeetingRow[]>();
+  if (error) throw error;
+  return data.map(fromRow);
+}
+
+const store = createRemoteStore(fetchMeetings);
+
+/** The signed-in user's meetings, newest first. Suspends until loaded. */
+export const useMeetings = store.useValue;
+
+/** Reloads meetings from Supabase (e.g. after tags change). */
+export const refreshMeetings = store.refresh;
+
+function meetingColumns(draft: MeetingDraft) {
+  return {
+    name: draft.name,
+    date: draft.date,
+    participants: draft.participants,
+    notes: draft.notes,
+  };
+}
+
+async function linkTags(meetingId: string, tagIds: string[]) {
+  if (tagIds.length === 0) return;
+  const { error } = await getSupabase()
+    .from("meeting_tags")
+    .insert(tagIds.map((tagId) => ({ meeting_id: meetingId, tag_id: tagId })));
+  if (error) throw error;
+}
+
+async function unlinkTags(meetingId: string, tagIds: string[]) {
+  if (tagIds.length === 0) return;
+  const { error } = await getSupabase()
+    .from("meeting_tags")
+    .delete()
+    .eq("meeting_id", meetingId)
+    .in("tag_id", tagIds);
+  if (error) throw error;
 }
 
 /**
- * Asks the browser to exempt this site's storage from automatic eviction.
- * Firefox may prompt the user; Chromium and Safari decide silently.
+ * Saves a new meeting and returns its ID. Throws if saving fails, and then nothing is saved:
+ * if linking the tags fails, the new meeting is deleted again, so trying once more doesn't
+ * create a duplicate.
  */
-export async function requestPersistentStorage(): Promise<boolean> {
+export async function createMeeting(draft: MeetingDraft): Promise<string> {
   try {
-    if (!navigator.storage?.persist) return false;
-    if (await navigator.storage.persisted()) return true;
-    return await navigator.storage.persist();
-  } catch {
-    return false;
+    const { data, error } = await getSupabase()
+      .from("meetings")
+      .insert(meetingColumns(draft))
+      .select("id")
+      .single();
+    if (error) throw error;
+    try {
+      await linkTags(data.id, draft.tagIds);
+    } catch (linkError) {
+      await getSupabase().from("meetings").delete().eq("id", data.id);
+      throw linkError;
+    }
+    return data.id;
+  } finally {
+    await store.refresh().catch(() => {});
+  }
+}
+
+/** The meeting's tag IDs as saved right now (not the in-memory copy, which may be stale). */
+async function savedTagIds(meetingId: string): Promise<string[]> {
+  const { data, error } = await getSupabase()
+    .from("meeting_tags")
+    .select("tag_id")
+    .eq("meeting_id", meetingId)
+    .returns<{ tag_id: string }[]>();
+  if (error) throw error;
+  return data.map((link) => link.tag_id);
+}
+
+/**
+ * Saves changes to a meeting, including which tags it has. Throws if saving fails. Tag changes
+ * are worked out against the saved links, so saving again after a failure (or after another
+ * tab changed the tags) finishes the job instead of failing on links that already exist.
+ */
+export async function updateMeeting(id: string, draft: MeetingDraft) {
+  try {
+    const { error } = await getSupabase().from("meetings").update(meetingColumns(draft)).eq("id", id);
+    if (error) throw error;
+    const previousTagIds = await savedTagIds(id);
+    await unlinkTags(id, previousTagIds.filter((tagId) => !draft.tagIds.includes(tagId)));
+    await linkTags(id, draft.tagIds.filter((tagId) => !previousTagIds.includes(tagId)));
+  } finally {
+    await store.refresh().catch(() => {});
+  }
+}
+
+/** Deletes a meeting (its tag links go with it). Throws if deleting fails. */
+export async function deleteMeeting(id: string) {
+  try {
+    const { error } = await getSupabase().from("meetings").delete().eq("id", id);
+    if (error) throw error;
+  } finally {
+    await store.refresh().catch(() => {});
   }
 }
