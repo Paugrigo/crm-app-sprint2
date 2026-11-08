@@ -6,7 +6,7 @@ A simple CRM for logging meetings, styled like a finance terminal. Sign up with 
 
 ## App option
 
-**CRM app.** It started as a browser-only app (everything in `localStorage`); this sprint moved it to Supabase with email/password accounts, a server-protected private area, and Row Level Security on every table.
+**Bring an app you already have:** the meeting-log CRM from Sprint 1. It started as a browser-only app (everything in `localStorage`); this sprint moved its data into Supabase and added email/password accounts, a server-protected private area, and Row Level Security on every table.
 
 ## What it does
 
@@ -30,13 +30,20 @@ A simple CRM for logging meetings, styled like a finance terminal. Sign up with 
 
 > Add a search box that filters items by querying Supabase directly, so the database returns only the matching rows instead of the browser filtering them.
 
-Delivered on the `feat/server-side-search` branch and merged in [pull request #4](https://github.com/Paugrigo/crm-app-sprint2/pull/4).
+Delivered on its own `feat/server-side-search` branch and merged in [pull request #1](https://github.com/TuringCollegeSubmissions/pgrigo-BAI.2.8/pull/1) of the submission repository (developed and reviewed as [pull request #4](https://github.com/Paugrigo/crm-app-sprint2/pull/4) in [Paugrigo/crm-app-sprint2](https://github.com/Paugrigo/crm-app-sprint2), the working repository).
 
 - The search box on the meeting log (`/`) calls a Postgres function, `search_meetings(...)`, through Supabase. Only the matching meetings come back.
 - Text search is a case-insensitive substring match on the meeting name, notes, participants, and tag names. `%` and `_` in the search text match literally.
 - Beyond the brief: Tags, People, and Date filters, also applied in the database and combined with the search text.
 - The function runs as the signed-in user (`security invoker`), so Row Level Security applies exactly as for a plain query: you can only ever find your own meetings. Only signed-in users can call it.
 - Search text and filters live in the URL, so reload, Back/Forward, and bookmarks keep them. Typing waits 250 ms before searching (Enter searches right away, Escape clears), and the previous results stay on screen, dimmed, while new ones load.
+
+## Further optional tasks
+
+Also completed, as part of the Supabase move in [pull request #3](https://github.com/Paugrigo/crm-app-sprint2/pull/3) (`feat/supabase-auth`) rather than on branches of their own:
+
+- **Self-service sign-up page.** New users register themselves at `/sign-up` with an email address and password. With email confirmation on, the page asks them to check their inbox; the link in Supabase's email lands on `/auth/confirm`, which signs them in and opens the meeting log.
+- **Track database changes with migrations.** Every change to the database structure (tables, columns, Row Level Security policies, privileges, and the search function) is a SQL migration in [`supabase/migrations/`](supabase/migrations), applied with the Supabase CLI (`supabase db push`). The folder holds the full history of how the database was built, so a new project can be set up from it.
 
 ## Run it locally
 
