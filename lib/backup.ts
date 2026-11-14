@@ -65,6 +65,8 @@ export type MergeResult = BackupData & {
   newMeetings: number;
   updatedMeetings: number;
   newTags: number;
+  /** Existing tags merged into another tag with the same name (`from` is deleted on save). */
+  tagMerges: { from: string; to: string }[];
 };
 
 /**
@@ -118,6 +120,9 @@ export function mergeBackup(current: BackupData, imported: BackupData): MergeRes
     newMeetings: importedMeetings.length - updatedMeetings,
     updatedMeetings,
     newTags,
+    tagMerges: current.tags
+      .filter((t) => mergedTagIds.has(t.id))
+      .map((t) => ({ from: t.id, to: resolveTagId(t.id) })),
   };
 }
 
@@ -177,70 +182,37 @@ function sameMeeting(a: Meeting, b: Meeting): boolean {
 }
 
 /**
- * Writes the result of mergeBackup(current, imported) to Supabase, changing only what differs
- * from `current`: new or renamed tags, new or changed meetings and their tag links, and tags
- * that were merged into another tag. Throws if a request fails (earlier steps stay saved).
+ * Writes the result of mergeBackup(current, imported) to Supabase, sending only what differs
+ * from `current`: new or renamed tags, new or changed meetings with their tags, and tags that
+ * were merged into another tag. It's one database call (import_backup, see supabase/migrations),
+ * so it either saves everything or nothing. Throws if it fails.
  */
 export async function saveImport(current: BackupData, merged: MergeResult) {
-  const supabase = getSupabase();
   try {
     const currentTags = new Map(current.tags.map((t) => [t.id, t]));
     const changedTags = merged.tags.filter((t) => currentTags.get(t.id)?.name !== t.name);
-    if (changedTags.length > 0) {
-      const { error } = await supabase
-        .from("tags")
-        .upsert(changedTags.map(({ id, name }) => ({ id, name })), { onConflict: "id" });
-      if (error) throw error;
-    }
 
     const currentMeetings = new Map(current.meetings.map((m) => [m.id, m]));
     const changedMeetings = merged.meetings.filter((m) => {
       const existing = currentMeetings.get(m.id);
       return !existing || !sameMeeting(existing, m);
     });
-    if (changedMeetings.length > 0) {
-      const { error } = await supabase.from("meetings").upsert(
-        changedMeetings.map(({ id, name, date, participants, notes }) => ({
-          id,
-          name,
-          date,
-          participants,
-          notes,
-        })),
-        { onConflict: "id" },
-      );
-      if (error) throw error;
-    }
 
-    const tagIds = new Set(merged.tags.map((t) => t.id));
-    for (const meeting of changedMeetings) {
-      const before = currentMeetings.get(meeting.id)?.tagIds ?? [];
-      // Skip IDs of tags that don't exist (e.g. deleted before the backup was made).
-      const after = meeting.tagIds.filter((id) => tagIds.has(id));
-      const removed = before.filter((id) => !after.includes(id));
-      const added = after.filter((id) => !before.includes(id));
-      if (removed.length > 0) {
-        const { error } = await supabase
-          .from("meeting_tags")
-          .delete()
-          .eq("meeting_id", meeting.id)
-          .in("tag_id", removed);
-        if (error) throw error;
-      }
-      if (added.length > 0) {
-        const { error } = await supabase
-          .from("meeting_tags")
-          .insert(added.map((tagId) => ({ meeting_id: meeting.id, tag_id: tagId })));
-        if (error) throw error;
-      }
-    }
-
-    // Existing tags that the backup merged into another tag (same name).
-    const mergedAway = current.tags.filter((t) => !tagIds.has(t.id)).map((t) => t.id);
-    if (mergedAway.length > 0) {
-      const { error } = await supabase.from("tags").delete().in("id", mergedAway);
-      if (error) throw error;
-    }
+    const { error } = await getSupabase().rpc("import_backup", {
+      changed_tags: changedTags.map(({ id, name }) => ({ id, name })),
+      // Tag IDs that aren't the user's tags (e.g. deleted before the backup was made) are
+      // skipped by the database.
+      changed_meetings: changedMeetings.map(({ id, name, date, participants, notes, tagIds }) => ({
+        id,
+        name,
+        date,
+        participants,
+        notes,
+        tag_ids: tagIds,
+      })),
+      tag_merges: merged.tagMerges,
+    });
+    if (error) throw error;
   } finally {
     await invalidate("tags", "meetings", "meeting_tags");
   }

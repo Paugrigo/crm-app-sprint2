@@ -24,7 +24,8 @@ A simple CRM for logging meetings, styled like a finance terminal. Sign up with 
 
 - All data lives in a Supabase Postgres database: tables `meetings`, `tags`, `meeting_tags`, and `user_settings`. Nothing is kept in `localStorage` or `sessionStorage`.
 - Every table has a `user_id` and **Row Level Security** enabled, with policies that let a user select, insert, update, and delete only their own rows. This holds even when the database is queried directly with the public key, outside the app.
-- The schema, policies, and search function are SQL migrations in [`supabase/migrations/`](supabase/migrations), so the database can be recreated from scratch.
+- Saving a meeting with its tags, and importing a backup, each happen in one database call (Postgres functions `save_meeting` and `import_backup`, which also run as the signed-in user under Row Level Security), so a failure partway never leaves half-saved data.
+- The schema, policies, and database functions are SQL migrations in [`supabase/migrations/`](supabase/migrations), so the database can be recreated from scratch.
 
 ## Optional task: Server-side search
 

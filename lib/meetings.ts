@@ -150,84 +150,39 @@ export function useMeetingSearch(search: MeetingSearch): Meeting[] {
   return searchStore.useValue(JSON.stringify(search));
 }
 
-function meetingColumns(draft: MeetingDraft) {
-  return {
-    name: draft.name,
-    date: draft.date,
-    participants: draft.participants,
-    notes: draft.notes,
-  };
-}
-
-async function linkTags(meetingId: string, tagIds: string[]) {
-  if (tagIds.length === 0) return;
-  const { error } = await getSupabase()
-    .from("meeting_tags")
-    .insert(tagIds.map((tagId) => ({ meeting_id: meetingId, tag_id: tagId })));
-  if (error) throw error;
-}
-
-async function unlinkTags(meetingId: string, tagIds: string[]) {
-  if (tagIds.length === 0) return;
-  const { error } = await getSupabase()
-    .from("meeting_tags")
-    .delete()
-    .eq("meeting_id", meetingId)
-    .in("tag_id", tagIds);
-  if (error) throw error;
-}
-
 /**
- * Saves a new meeting and returns its ID. Throws if saving fails, and then nothing is saved:
- * if linking the tags fails, the new meeting is deleted again, so trying once more doesn't
- * create a duplicate.
+ * Creates (id null) or updates a meeting and sets its tags, in one database call (save_meeting,
+ * see supabase/migrations): it either saves everything or nothing. Returns the meeting's ID.
  */
-export async function createMeeting(draft: MeetingDraft): Promise<string> {
+async function saveMeeting(id: string | null, draft: MeetingDraft): Promise<string> {
   try {
-    const { data, error } = await getSupabase()
-      .from("meetings")
-      .insert(meetingColumns(draft))
-      .select("id")
-      .single();
+    const { data, error } = await getSupabase().rpc("save_meeting", {
+      meeting_id: id,
+      name: draft.name,
+      date: draft.date,
+      participants: draft.participants,
+      notes: draft.notes,
+      // Tag IDs that aren't the user's tags (e.g. deleted in another tab) are skipped.
+      tag_ids: draft.tagIds,
+    });
     if (error) throw error;
-    try {
-      await linkTags(data.id, draft.tagIds);
-    } catch (linkError) {
-      await getSupabase().from("meetings").delete().eq("id", data.id);
-      throw linkError;
-    }
-    return data.id;
+    return data as string;
   } finally {
     await invalidate("meetings", "meeting_tags");
   }
 }
 
-/** The meeting's tag IDs as saved right now (not the in-memory copy, which may be stale). */
-async function savedTagIds(meetingId: string): Promise<string[]> {
-  const { data, error } = await getSupabase()
-    .from("meeting_tags")
-    .select("tag_id")
-    .eq("meeting_id", meetingId)
-    .returns<{ tag_id: string }[]>();
-  if (error) throw error;
-  return data.map((link) => link.tag_id);
+/** Saves a new meeting and returns its ID. Throws if saving fails; then nothing is saved. */
+export function createMeeting(draft: MeetingDraft): Promise<string> {
+  return saveMeeting(null, draft);
 }
 
 /**
- * Saves changes to a meeting, including which tags it has. Throws if saving fails. Tag changes
- * are worked out against the saved links, so saving again after a failure (or after another
- * tab changed the tags) finishes the job instead of failing on links that already exist.
+ * Saves changes to a meeting, including which tags it has. Throws if saving fails (then nothing
+ * changes), including when the meeting no longer exists.
  */
 export async function updateMeeting(id: string, draft: MeetingDraft) {
-  try {
-    const { error } = await getSupabase().from("meetings").update(meetingColumns(draft)).eq("id", id);
-    if (error) throw error;
-    const previousTagIds = await savedTagIds(id);
-    await unlinkTags(id, previousTagIds.filter((tagId) => !draft.tagIds.includes(tagId)));
-    await linkTags(id, draft.tagIds.filter((tagId) => !previousTagIds.includes(tagId)));
-  } finally {
-    await invalidate("meetings", "meeting_tags");
-  }
+  await saveMeeting(id, draft);
 }
 
 /** Deletes a meeting (its tag links go with it). Throws if deleting fails. */

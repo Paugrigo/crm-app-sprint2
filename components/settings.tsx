@@ -186,7 +186,7 @@ function BackupSettings() {
     } catch (e) {
       setStatus({
         kind: "error",
-        text: `Couldn't finish the import; some items may have been saved. ${describeError(e)}`,
+        text: `Couldn't import; nothing was changed. ${describeError(e)}`,
       });
     }
     setImporting(false);
