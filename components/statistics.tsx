@@ -5,7 +5,7 @@ import { use, type ReactNode } from "react";
 import { browser } from "react-dom";
 import { formatMeetingDate } from "@/lib/format-date";
 import { computeStatistics, daysBetween, localToday, type PersonStats } from "@/lib/statistics";
-import { useMeetings } from "@/lib/meetings";
+import { useStatisticsMeetings } from "@/lib/meetings";
 import { useTags } from "@/lib/tags";
 import { buttonPrimary, emptyState, label, panel, panelHeader } from "./ui";
 
@@ -23,7 +23,7 @@ function plural(count: number, word: string): string {
 export function Statistics() {
   use(browser("Meetings are loaded from Supabase in the browser."));
 
-  const meetings = useMeetings();
+  const meetings = useStatisticsMeetings();
   const tags = useTags();
   const today = localToday();
   const stats = computeStatistics(meetings, tags, today);

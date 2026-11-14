@@ -2,6 +2,7 @@
 // every query to the signed-in user's rows. Browser-only: see lib/remote-store.ts.
 
 import type { MeetingSearch } from "./meeting-filters";
+import { fetchAllPages } from "./supabase/fetch-all";
 import { getSupabase } from "./supabase/client";
 import { createKeyedRemoteStore, createRemoteStore, invalidate } from "./remote-store";
 
@@ -92,49 +93,115 @@ function fromRow(row: MeetingRow): Meeting {
   };
 }
 
-async function fetchMeetings(): Promise<Meeting[]> {
+// Nothing below loads the whole meetings table into one store: each page reads only what it
+// shows (one meeting, the 8 most recent, a page of the log, counts), so a user with thousands of
+// meetings doesn't download all of them on every page. Where every row is needed (statistics,
+// export), it is read page by page (fetchAllPages): a plain select stops at the API's row limit.
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Whether `value` looks like a database ID. Querying with anything else is a database error. */
+export function isUuid(value: string): boolean {
+  return UUID.test(value);
+}
+
+/** Newest first, like the meeting log. The ID breaks ties, so pages never overlap or skip. */
+function newestFirst<Q extends { order: (column: string, options?: { ascending?: boolean }) => Q }>(
+  query: Q,
+): Q {
+  return query.order("date", { ascending: false }).order("created_at", { ascending: false }).order("id");
+}
+
+async function fetchMeeting(id: string): Promise<Meeting | null> {
+  // Not an ID at all (e.g. a mistyped URL): no meeting has it.
+  if (!isUuid(id)) return null;
   const { data, error } = await getSupabase()
     .from("meetings")
     .select(MEETING_COLUMNS)
-    .order("date", { ascending: false })
-    .order("created_at", { ascending: false })
-    .returns<MeetingRow[]>();
+    .eq("id", id)
+    .maybeSingle<MeetingRow>();
   if (error) throw error;
-  return data.map(fromRow);
+  return data ? fromRow(data) : null;
 }
 
-// Reads meeting_tags too: each meeting carries its tag IDs.
-const store = createRemoteStore(fetchMeetings, { tables: ["meetings", "meeting_tags"] });
-
-/** The signed-in user's meetings, newest first. Suspends until loaded. */
-export const useMeetings = store.useValue;
+const meetingStore = createKeyedRemoteStore(fetchMeeting, { tables: ["meetings", "meeting_tags"] });
 
 /**
- * Meetings matching a search (text and filters), newest first, found by the database (the
- * search_meetings function; see supabase/migrations): only the matching rows are downloaded.
- * Takes the search as JSON because the results are cached per search (see searchStore).
+ * One meeting by ID, or null if there's none: unknown IDs and other users' meetings (which RLS
+ * hides) look the same. Suspends until loaded.
  */
-async function searchMeetings(searchJson: string): Promise<Meeting[]> {
-  const search = JSON.parse(searchJson) as MeetingSearch;
-  const { data, error } = await getSupabase()
-    .rpc("search_meetings", {
-      search: search.query || null,
-      tag_ids: search.tagIds.length > 0 ? search.tagIds : null,
-      tags_match_all: search.tagsMatchAll,
-      participants: search.people.length > 0 ? search.people : null,
-      participants_match_all: search.peopleMatchAll,
-      date_from: search.from || null,
-      date_to: search.to || null,
-    })
-    // PostgREST can only order a function's results by selected columns, so created_at is
-    // selected here too (fromRow ignores it).
-    .select(`${MEETING_COLUMNS}, created_at`)
-    .order("date", { ascending: false })
-    .order("created_at", { ascending: false });
+export function useMeeting(id: string): Meeting | null {
+  return meetingStore.useValue(id);
+}
+
+export type RecentMeeting = Pick<Meeting, "id" | "name" | "date">;
+
+/** How many meetings the sidebar lists. */
+export const RECENT_MEETINGS_LIMIT = 8;
+
+async function fetchRecentMeetings(): Promise<RecentMeeting[]> {
+  const { data, error } = await newestFirst(
+    getSupabase().from("meetings").select("id, name, date"),
+  )
+    .limit(RECENT_MEETINGS_LIMIT)
+    .returns<RecentMeeting[]>();
+  if (error) throw error;
+  return data;
+}
+
+const recentStore = createRemoteStore(fetchRecentMeetings, { tables: ["meetings"] });
+
+/** The signed-in user's most recent meetings (RECENT_MEETINGS_LIMIT), newest first. Suspends. */
+export const useRecentMeetings = recentStore.useValue;
+
+async function fetchMeetingCount(): Promise<number> {
+  const { count, error } = await getSupabase()
+    .from("meetings")
+    .select("id", { count: "exact", head: true });
+  if (error) throw error;
+  return count ?? 0;
+}
+
+const countStore = createRemoteStore(fetchMeetingCount, { tables: ["meetings"] });
+
+/** How many meetings the signed-in user has. Suspends until loaded. */
+export const useMeetingCount = countStore.useValue;
+
+/** The first `limit` meetings matching a search, and how many match in total. */
+export type MeetingPage = { meetings: Meeting[]; total: number };
+
+/**
+ * The first `limit` meetings matching a search (text and filters), newest first, found by the
+ * database (the search_meetings function; see supabase/migrations): only those rows are
+ * downloaded. An empty search matches every meeting. Takes the key as JSON because results are
+ * cached per search and limit (see searchStore).
+ */
+async function searchMeetings(keyJson: string): Promise<MeetingPage> {
+  const { search, limit } = JSON.parse(keyJson) as { search: MeetingSearch; limit: number };
+  const { data, error, count } = await newestFirst(
+    getSupabase()
+      .rpc(
+        "search_meetings",
+        {
+          search: search.query || null,
+          tag_ids: search.tagIds.length > 0 ? search.tagIds : null,
+          tags_match_all: search.tagsMatchAll,
+          participants: search.people.length > 0 ? search.people : null,
+          participants_match_all: search.peopleMatchAll,
+          date_from: search.from || null,
+          date_to: search.to || null,
+        },
+        { count: "exact" },
+      )
+      // PostgREST can only order a function's results by selected columns, so created_at is
+      // selected here too (fromRow ignores it).
+      .select(`${MEETING_COLUMNS}, created_at`),
+  ).range(0, limit - 1);
   if (error) throw error;
   // Without generated database types, supabase-js can't tell that this function returns rows
   // (setof meetings) rather than one value, so the row type is asserted here.
-  return (data as unknown as MeetingRow[]).map(fromRow);
+  const meetings = (data as unknown as MeetingRow[]).map(fromRow);
+  return { meetings, total: count ?? meetings.length };
 }
 
 // Reads tags too: the search text matches tag names.
@@ -143,12 +210,83 @@ const searchStore = createKeyedRemoteStore(searchMeetings, {
 });
 
 /**
- * The signed-in user's meetings matching `search` (see lib/meeting-filters.ts), newest first.
- * Suspends until loaded.
+ * The first `limit` of the signed-in user's meetings matching `search` (see
+ * lib/meeting-filters.ts), newest first, with the total number of matches. Suspends until loaded.
  */
-export function useMeetingSearch(search: MeetingSearch): Meeting[] {
-  return searchStore.useValue(JSON.stringify(search));
+export function useMeetingPage(search: MeetingSearch, limit: number): MeetingPage {
+  return searchStore.useValue(JSON.stringify({ search, limit }));
 }
+
+/** Every meeting of the signed-in user, newest first, read page by page. For backup export. */
+export function fetchAllMeetings(): Promise<Meeting[]> {
+  return fetchAllPages<MeetingRow>((from, to) =>
+    newestFirst(getSupabase().from("meetings").select(MEETING_COLUMNS)).range(from, to),
+  ).then((rows) => rows.map(fromRow));
+}
+
+/** IDs per request in fetchMeetingsByIds(): they go in the URL, which has a length limit. */
+const IDS_PER_REQUEST = 100;
+
+/**
+ * The signed-in user's meetings with these IDs (others' and unknown IDs are simply not found).
+ * IDs that aren't UUIDs can't be anyone's meeting and are skipped. For backup import.
+ */
+export async function fetchMeetingsByIds(ids: string[]): Promise<Meeting[]> {
+  const uuids = [...new Set(ids.filter(isUuid))];
+  const meetings: Meeting[] = [];
+  for (let i = 0; i < uuids.length; i += IDS_PER_REQUEST) {
+    const { data, error } = await getSupabase()
+      .from("meetings")
+      .select(MEETING_COLUMNS)
+      .in("id", uuids.slice(i, i + IDS_PER_REQUEST))
+      .returns<MeetingRow[]>();
+    if (error) throw error;
+    meetings.push(...data.map(fromRow));
+  }
+  return meetings;
+}
+
+/** What statistics need from a meeting (no names or notes, which can be long). */
+export type StatisticsMeeting = Pick<Meeting, "date" | "participants" | "tagIds">;
+
+async function fetchStatisticsMeetings(): Promise<StatisticsMeeting[]> {
+  const rows = await fetchAllPages<Pick<MeetingRow, "date" | "participants" | "meeting_tags">>(
+    (from, to) =>
+      newestFirst(
+        getSupabase().from("meetings").select("date, participants, meeting_tags(tag_id)"),
+      ).range(from, to),
+  );
+  return rows.map((row) => ({
+    date: row.date,
+    participants: row.participants,
+    tagIds: row.meeting_tags.map((link) => link.tag_id),
+  }));
+}
+
+const statisticsStore = createRemoteStore(fetchStatisticsMeetings, {
+  tables: ["meetings", "meeting_tags"],
+});
+
+/** Every meeting of the signed-in user, with only what statistics need. Suspends until loaded. */
+export const useStatisticsMeetings = statisticsStore.useValue;
+
+export type Participant = { name: string; meetings: number };
+
+async function fetchParticipants(): Promise<Participant[]> {
+  const { data, error } = await getSupabase().rpc("meeting_participants");
+  if (error) throw error;
+  // supabase-js can't tell the function's row type without generated database types.
+  return data as unknown as Participant[];
+}
+
+const participantsStore = createRemoteStore(fetchParticipants, { tables: ["meetings"] });
+
+/**
+ * Everyone in the signed-in user's meetings with their meeting counts, worked out by the
+ * database (meeting_participants; names that differ only in case or surrounding spaces count
+ * once). Unsorted. Suspends until loaded.
+ */
+export const useParticipants = participantsStore.useValue;
 
 /**
  * Creates (id null) or updates a meeting and sets its tags, in one database call (save_meeting,

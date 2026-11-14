@@ -12,7 +12,7 @@ import {
   type MeetingFilters,
   type MeetingSearch,
 } from "@/lib/meeting-filters";
-import { deleteMeeting, useMeetingSearch, useMeetings } from "@/lib/meetings";
+import { deleteMeeting, useMeetingPage } from "@/lib/meetings";
 import { describeError } from "@/lib/remote-store";
 import { useTags } from "@/lib/tags";
 import { MeetingFilterBar } from "./meeting-filter-bar";
@@ -21,6 +21,9 @@ import { errorBox, iconButton, input } from "./ui";
 
 /** How long to wait after the last keystroke before searching. */
 const SEARCH_DELAY_MS = 250;
+
+/** Meetings shown at first, and added by each "Show more". */
+const PAGE_SIZE = 100;
 
 /** Applies a change to the filters in the URL, starting from what the URL holds right now. */
 function updateFilters(patch: Partial<MeetingFilters>) {
@@ -49,12 +52,19 @@ export function MeetingLog() {
     tagIds: urlFilters.tagIds.filter((id) => tags.some((t) => t.id === id)),
   };
   const search = toMeetingSearch(filters);
+  const searchKey = JSON.stringify(search);
+  // How many meetings to show. "Show more" raises it for the current search; any other search
+  // starts again at one page.
+  const [shownMore, setShownMore] = useState({ searchKey, limit: PAGE_SIZE });
+  const limit = shownMore.searchKey === searchKey ? shownMore.limit : PAGE_SIZE;
   // While the next results load, keep showing the current ones (dimmed) instead of the
   // Suspense fallback. Compared as JSON, since a new object is built on every render.
-  const searchKey = JSON.stringify(search);
-  const shownKey = useDeferredValue(searchKey);
-  const shown = JSON.parse(shownKey) as MeetingSearch;
-  const loading = shownKey !== searchKey;
+  const pageKey = JSON.stringify({ search, limit });
+  const shownKey = useDeferredValue(pageKey);
+  const shown = JSON.parse(shownKey) as { search: MeetingSearch; limit: number };
+  const loading = shownKey !== pageKey;
+  // Loading because the search changed (not only "Show more"): the search box says so.
+  const searching = loading && JSON.stringify(shown.search) !== searchKey;
   const [error, setError] = useState<string | null>(null);
   // Bumped by "Clear all": remounts the search box, which drops text typed but not yet searched
   // and its pending debounce timer (that would otherwise write the text back into the URL).
@@ -76,7 +86,7 @@ export function MeetingLog() {
 
   return (
     <section>
-      <SearchBox key={searchBoxKey} urlQuery={filters.query} loading={loading} />
+      <SearchBox key={searchBoxKey} urlQuery={filters.query} loading={searching} />
       <MeetingFilterBar filters={filters} onChange={updateFilters} onClearAll={clearAll} />
       {error && (
         <p role="alert" className={`${errorBox} mb-4`}>
@@ -84,39 +94,51 @@ export function MeetingLog() {
         </p>
       )}
       <div aria-busy={loading} className={`transition-opacity ${loading ? "opacity-60" : ""}`}>
-        {isFiltered(shown) ? (
-          <SearchResults search={shown} onDelete={handleDelete} onClear={clearAll} />
-        ) : (
-          <AllMeetings onDelete={handleDelete} />
-        )}
+        <Results
+          search={shown.search}
+          limit={shown.limit}
+          onDelete={handleDelete}
+          onClear={clearAll}
+          onShowMore={() => setShownMore({ searchKey, limit: limit + PAGE_SIZE })}
+          loadingMore={loading && !searching}
+        />
       </div>
     </section>
   );
 }
 
-function AllMeetings({ onDelete }: { onDelete: (id: string) => void }) {
-  return <MeetingList meetings={useMeetings()} onDelete={onDelete} />;
-}
-
-/** Only the matching meetings, as returned by the database. */
-function SearchResults({
+/**
+ * The first `limit` meetings matching the search, as returned by the database (all meetings
+ * when nothing is searched or filtered).
+ */
+function Results({
   search,
+  limit,
   onDelete,
   onClear,
+  onShowMore,
+  loadingMore,
 }: {
   search: MeetingSearch;
+  limit: number;
   onDelete: (id: string) => void;
   onClear: () => void;
+  onShowMore: () => void;
+  loadingMore: boolean;
 }) {
+  const { meetings, total } = useMeetingPage(search, limit);
   return (
     <MeetingList
-      meetings={useMeetingSearch(search)}
+      meetings={meetings}
+      total={total}
       onDelete={onDelete}
-      search={{
-        query: search.query,
-        filtered: isFiltered({ ...search, query: "" }),
-        onClear,
-      }}
+      onShowMore={onShowMore}
+      loadingMore={loadingMore}
+      search={
+        isFiltered(search)
+          ? { query: search.query, filtered: isFiltered({ ...search, query: "" }), onClear }
+          : undefined
+      }
     />
   );
 }

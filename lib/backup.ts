@@ -2,7 +2,7 @@
 // later (also how data from the old browser-only version of the app moves into Supabase).
 // The format functions are pure; saveImport() writes a merge result to Supabase.
 
-import { toMeeting, type Meeting } from "./meetings";
+import { fetchMeetingsByIds, toMeeting, type Meeting } from "./meetings";
 import { invalidate } from "./remote-store";
 import { getSupabase } from "./supabase/client";
 import { sameTagName, toTag, type Tag } from "./tags";
@@ -76,7 +76,7 @@ export type MergeResult = BackupData & {
  * That includes an existing tag that the backup renames to another tag's name: it is merged
  * too, and its meetings, here or in the backup, move to the other tag.
  */
-export function mergeBackup(current: BackupData, imported: BackupData): MergeResult {
+function mergeBackup(current: BackupData, imported: BackupData): MergeResult {
   // Tag IDs merged into another tag, mapped to that tag's ID. Other IDs stay as they are.
   const mergedTagIds = new Map<string, string>();
   function resolveTagId(id: string): string {
@@ -144,7 +144,7 @@ async function derivedUuid(key: string): Promise<string> {
  * derived from the user and the original ID, so importing the same file again still updates the
  * same items instead of duplicating them. IDs of the user's own items are kept.
  */
-export async function localizeBackup(current: BackupData, imported: BackupData): Promise<BackupData> {
+async function localizeBackup(current: BackupData, imported: BackupData): Promise<BackupData> {
   const { data, error } = await getSupabase().auth.getClaims();
   const userId = data?.claims?.sub;
   if (error || !userId) throw error ?? new Error("You're signed out. Reload the page to sign in again.");
@@ -171,6 +171,26 @@ export async function localizeBackup(current: BackupData, imported: BackupData):
   return { meetings, tags };
 }
 
+/** What importing a backup would change, worked out before asking the user to confirm. */
+export type ImportPlan = {
+  /** The user's data that the import touches: all their tags, and their meetings in the file. */
+  current: BackupData;
+  merged: MergeResult;
+};
+
+/**
+ * Works out an import without loading all of the user's meetings: only the ones the file could
+ * update are fetched (by ID: the file's own IDs, then the IDs localizeBackup() gives them, which
+ * exist if the same file was imported before). `tags` is all of the user's tags. Pass the result
+ * to saveImport() once the user confirms.
+ */
+export async function planImport(imported: BackupData, tags: Tag[]): Promise<ImportPlan> {
+  const ownMeetings = await fetchMeetingsByIds(imported.meetings.map((m) => m.id));
+  const localized = await localizeBackup({ meetings: ownMeetings, tags }, imported);
+  const current = { meetings: await fetchMeetingsByIds(localized.meetings.map((m) => m.id)), tags };
+  return { current, merged: mergeBackup(current, localized) };
+}
+
 function sameMeeting(a: Meeting, b: Meeting): boolean {
   return (
     a.name === b.name &&
@@ -182,12 +202,11 @@ function sameMeeting(a: Meeting, b: Meeting): boolean {
 }
 
 /**
- * Writes the result of mergeBackup(current, imported) to Supabase, sending only what differs
- * from `current`: new or renamed tags, new or changed meetings with their tags, and tags that
+ * Writes an import plan (planImport()) to Supabase, sending only what differs from `current`: new or renamed tags, new or changed meetings with their tags, and tags that
  * were merged into another tag. It's one database call (import_backup, see supabase/migrations),
  * so it either saves everything or nothing. Throws if it fails.
  */
-export async function saveImport(current: BackupData, merged: MergeResult) {
+export async function saveImport({ current, merged }: ImportPlan) {
   try {
     const currentTags = new Map(current.tags.map((t) => [t.id, t]));
     const changedTags = merged.tags.filter((t) => currentTags.get(t.id)?.name !== t.name);

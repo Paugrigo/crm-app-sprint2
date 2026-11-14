@@ -53,6 +53,22 @@ const store = createRemoteStore(fetchTags, { tables: ["tags"] });
 /** The signed-in user's tags (unsorted). Suspends until loaded. */
 export const useTags = store.useValue;
 
+/** How many meetings each tag is on, by tag ID, counted by the database. */
+async function fetchTagMeetingCounts(): Promise<Map<string, number>> {
+  // meeting_tags(count) makes PostgREST count each tag's links instead of returning them.
+  const { data, error } = await getSupabase()
+    .from("tags")
+    .select("id, meeting_tags(count)")
+    .returns<{ id: string; meeting_tags: { count: number }[] }[]>();
+  if (error) throw error;
+  return new Map(data.map((row) => [row.id, row.meeting_tags[0]?.count ?? 0]));
+}
+
+const countsStore = createRemoteStore(fetchTagMeetingCounts, { tables: ["tags", "meeting_tags"] });
+
+/** How many meetings each of the user's tags is on, by tag ID. Suspends until loaded. */
+export const useTagMeetingCounts = countsStore.useValue;
+
 /** Thrown when a tag name is already taken (the database enforces this too). */
 export class DuplicateTagNameError extends Error {}
 

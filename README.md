@@ -12,7 +12,7 @@ A simple CRM for logging meetings, styled like a finance terminal. Sign up with 
 
 - **Accounts:** sign up and sign in with email and password (`/sign-up`, `/sign-in`). Every other page is private: a signed-out visitor is redirected to the sign-in page by the server before the page loads. The sidebar shows the signed-in email and a Sign out button.
 - **Log meetings** with a name, date, participants, notes, and tags. Each meeting has its own bookmarkable page, where you can edit or delete it.
-- **Meeting log:** every meeting, newest first, with a sidebar menu showing the 8 most recent.
+- **Meeting log:** every meeting, newest first, 100 at a time with a "Show more" button, and a sidebar menu showing the 8 most recent. Each page downloads only what it shows, so the app stays fast with thousands of meetings.
 - **Search and filters:** search meeting names, notes, participants, and tag names, and filter by tags, people (each with an Any/All switch), and date (this month, this year, upcoming, past, or a custom range). The database does the matching; see [Optional task](#optional-task-server-side-search).
 - **Tags:** create, rename, and delete tags on the Tags page, then pick them when logging a meeting. Renaming a tag updates it on every meeting; deleting it removes it from its meetings but keeps the meetings.
 - **Statistics:** meetings this month vs last month, meetings per month for the last year, who you meet most, who you haven't met in a while, and breakdowns by tag and day of the week.

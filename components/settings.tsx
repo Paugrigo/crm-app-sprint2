@@ -2,15 +2,8 @@
 
 import { use, useLayoutEffect, useRef, useState, type ChangeEvent } from "react";
 import { browser } from "react-dom";
-import {
-  fromBackup,
-  localizeBackup,
-  mergeBackup,
-  saveImport,
-  toBackup,
-  type BackupData,
-} from "@/lib/backup";
-import { useMeetings } from "@/lib/meetings";
+import { fromBackup, planImport, saveImport, toBackup, type ImportPlan } from "@/lib/backup";
+import { fetchAllMeetings, useMeetingCount, type Meeting } from "@/lib/meetings";
 import { describeError } from "@/lib/remote-store";
 import { useTags } from "@/lib/tags";
 import { saveThemePreference, useThemePreference, type ThemePreference } from "@/lib/theme";
@@ -106,17 +99,31 @@ function AppearanceSettings() {
 }
 
 function BackupSettings() {
-  const meetings = useMeetings();
+  const meetingCount = useMeetingCount();
   const tags = useTags();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<Status | null>(null);
-  const [importing, setImporting] = useState(false);
+  // What's running: reading meetings for an export, checking a file before the import
+  // confirmation, or saving an import. Both buttons are disabled meanwhile.
+  const [busy, setBusy] = useState<"exporting" | "checking" | "importing" | null>(null);
 
   // Next.js keeps this page alive (hidden) after navigating away; don't show an old
   // result message when coming back.
   useLayoutEffect(() => () => setStatus(null), []);
 
-  function exportMeetings() {
+  async function exportMeetings() {
+    setBusy("exporting");
+    setStatus(null);
+    let meetings: Meeting[];
+    try {
+      // Read now, page by page, rather than kept in memory: only the export needs all of them.
+      meetings = await fetchAllMeetings();
+    } catch (e) {
+      setStatus({ kind: "error", text: `Couldn't export. ${describeError(e)}` });
+      setBusy(null);
+      return;
+    }
+    setBusy(null);
     const blob = new Blob([toBackup({ meetings, tags })], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -158,14 +165,18 @@ function BackupSettings() {
       return;
     }
 
-    let localized: BackupData;
+    let plan: ImportPlan;
+    setBusy("checking");
+    setStatus(null);
     try {
-      localized = await localizeBackup({ meetings, tags }, imported);
+      plan = await planImport(imported, tags);
     } catch (e) {
       setStatus({ kind: "error", text: `Couldn't import. ${describeError(e)}` });
+      setBusy(null);
       return;
     }
-    const merged = mergeBackup({ meetings, tags }, localized);
+    setBusy(null);
+    const { merged } = plan;
     const question =
       `Import ${plural(imported.meetings.length, "meeting")} and ${plural(imported.tags.length, "tag")}?` +
       (merged.updatedMeetings > 0
@@ -175,10 +186,9 @@ function BackupSettings() {
       " Everything else you have is kept.";
     if (!window.confirm(question)) return;
 
-    setImporting(true);
-    setStatus(null);
+    setBusy("importing");
     try {
-      await saveImport({ meetings, tags }, merged);
+      await saveImport(plan);
       setStatus({
         kind: "success",
         text: `Imported ${plural(merged.newMeetings, "new meeting")}, updated ${merged.updatedMeetings}, and added ${plural(merged.newTags, "new tag")}.`,
@@ -189,7 +199,7 @@ function BackupSettings() {
         text: `Couldn't import; nothing was changed. ${describeError(e)}`,
       });
     }
-    setImporting(false);
+    setBusy(null);
   }
 
   return (
@@ -207,18 +217,18 @@ function BackupSettings() {
           <button
             type="button"
             onClick={exportMeetings}
-            disabled={meetings.length === 0}
+            disabled={meetingCount === 0 || busy !== null}
             className={buttonSecondary}
           >
-            Export meetings ({meetings.length})
+            {busy === "exporting" ? "Exporting…" : `Export meetings (${meetingCount})`}
           </button>
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            disabled={importing}
+            disabled={busy !== null}
             className={buttonSecondary}
           >
-            {importing ? "Importing…" : "Import from file…"}
+            {busy === "checking" ? "Checking file…" : busy === "importing" ? "Importing…" : "Import from file…"}
           </button>
           <input
             ref={fileInputRef}

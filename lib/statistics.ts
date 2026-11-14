@@ -1,7 +1,7 @@
 // Meeting statistics for the /statistics page. Pure functions; reading storage is up to the caller.
 // Only meetings dated up to today count, so planned meetings don't skew the numbers.
 
-import type { Meeting } from "./meetings";
+import type { StatisticsMeeting } from "./meetings";
 import { sortTags, type Tag } from "./tags";
 
 export type MonthCount = { month: string /* YYYY-MM */; count: number };
@@ -84,7 +84,11 @@ function preferredSpelling(spellings: Map<string, number>): string {
   return best;
 }
 
-export function computeStatistics(meetings: Meeting[], tags: Tag[], today: string): Statistics {
+export function computeStatistics(
+  meetings: StatisticsMeeting[],
+  tags: Tag[],
+  today: string,
+): Statistics {
   const past = meetings.filter((m) => m.date <= today);
   // Oldest first, so later meetings overwrite each person's last-met date.
   const chronological = [...past].sort((a, b) => a.date.localeCompare(b.date));

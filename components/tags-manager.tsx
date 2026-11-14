@@ -2,7 +2,6 @@
 
 import { use, useLayoutEffect, useState, type FormEvent, type KeyboardEvent } from "react";
 import { browser } from "react-dom";
-import { useMeetings } from "@/lib/meetings";
 import { describeError } from "@/lib/remote-store";
 import {
   createTag,
@@ -12,6 +11,7 @@ import {
   sameTagName,
   sortTags,
   TAG_NAME_MAX_LENGTH,
+  useTagMeetingCounts,
   useTags,
   type Tag,
 } from "@/lib/tags";
@@ -39,13 +39,13 @@ function tooLongError(trimmed: string): string | null {
     : null;
 }
 
-// Browser-only: tags and meetings are loaded from Supabase with the signed-in user's session.
+// Browser-only: tags and their meeting counts are loaded from Supabase with the signed-in user's session.
 // Render inside a <Suspense> boundary.
 export function TagsManager() {
   use(browser("Tags are loaded from Supabase in the browser."));
 
   const tags = useTags();
-  const meetings = useMeetings();
+  const meetingCounts = useTagMeetingCounts();
   const [name, setName] = useState("");
   const [status, setStatus] = useState<Status | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -129,7 +129,7 @@ export function TagsManager() {
   }
 
   function meetingCount(tagId: string): number {
-    return meetings.filter((meeting) => meeting.tagIds.includes(tagId)).length;
+    return meetingCounts.get(tagId) ?? 0;
   }
 
   return (

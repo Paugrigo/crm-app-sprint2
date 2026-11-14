@@ -12,16 +12,26 @@ function weekday(date: string): string {
 }
 
 /**
- * Meetings as rows, newest first. With `search`, they're search results: the header counts
- * matches, and an empty list says nothing matched (with a button that calls `search.onClear`).
+ * Meetings as rows, newest first. `meetings` may be only the first of `total`: then a "Show
+ * more" button at the bottom calls `onShowMore`. With `search`, they're search results: the
+ * header counts matches, and an empty list says nothing matched (with a button that calls
+ * `search.onClear`).
  */
 export function MeetingList({
   meetings,
+  total,
   onDelete,
+  onShowMore,
+  loadingMore = false,
   search,
 }: {
   meetings: Meeting[];
+  /** How many meetings there are in all (or match the search), shown or not. */
+  total: number;
   onDelete: (id: string) => void;
+  onShowMore: () => void;
+  /** Set while the next page loads after "Show more". */
+  loadingMore?: boolean;
   /** Set when the list is filtered: the search text ("" if none) and whether filters are set. */
   search?: { query: string; filtered: boolean; onClear: () => void };
 }) {
@@ -72,9 +82,7 @@ export function MeetingList({
       <div className={panelHeader}>
         <h2 className={label}>{search ? "Search results" : "Meetings"}</h2>
         <span className="font-mono text-xs text-muted">
-          {search
-            ? `${meetings.length} ${meetings.length === 1 ? "match" : "matches"}`
-            : `${meetings.length} total`}
+          {search ? `${total} ${total === 1 ? "match" : "matches"}` : `${total} total`}
         </span>
       </div>
       <ul className="divide-y divide-line">
@@ -123,6 +131,21 @@ export function MeetingList({
           </li>
         ))}
       </ul>
+      {meetings.length < total && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-4 py-3">
+          <span className="font-mono text-xs text-muted">
+            Showing {meetings.length} of {total}
+          </span>
+          <button
+            type="button"
+            onClick={onShowMore}
+            disabled={loadingMore}
+            className={buttonSecondary}
+          >
+            {loadingMore ? "Loading…" : "Show more"}
+          </button>
+        </div>
+      )}
     </section>
   );
 }

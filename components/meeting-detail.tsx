@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { use, useLayoutEffect, useState } from "react";
 import { browser } from "react-dom";
 import { formatMeetingDate } from "@/lib/format-date";
-import { deleteMeeting, updateMeeting, useMeetings, type MeetingDraft } from "@/lib/meetings";
+import { deleteMeeting, updateMeeting, useMeeting, type MeetingDraft } from "@/lib/meetings";
 import { describeError } from "@/lib/remote-store";
 import { DeleteMeetingButton } from "./delete-meeting-button";
 import { MeetingForm } from "./meeting-form";
@@ -28,8 +28,7 @@ export function MeetingDetail({ id }: { id: string }) {
   use(browser("Meetings are loaded from Supabase in the browser."));
 
   const router = useRouter();
-  const meetings = useMeetings();
-  const meeting = meetings.find((m) => m.id === id);
+  const meeting = useMeeting(id);
   const [error, setError] = useState<string | null>(null);
   const [deleted, setDeleted] = useState(false);
   const [editing, setEditing] = useState(false);
