@@ -29,6 +29,16 @@ import {
 
 type Status = { kind: "success" | "error"; text: string };
 
+/**
+ * The error for a tag name that's too long, or null. Checked on save instead of with `maxLength`,
+ * which would silently cut off a pasted name and count surrounding spaces the database ignores.
+ */
+function tooLongError(trimmed: string): string | null {
+  return trimmed.length > TAG_NAME_MAX_LENGTH
+    ? `Shorten the tag name to ${TAG_NAME_MAX_LENGTH} characters or fewer (it has ${trimmed.length}).`
+    : null;
+}
+
 // Browser-only: tags and meetings are loaded from Supabase with the signed-in user's session.
 // Render inside a <Suspense> boundary.
 export function TagsManager() {
@@ -55,6 +65,11 @@ export function TagsManager() {
     event.preventDefault();
     const trimmed = name.trim();
     if (!trimmed || creating) return;
+    const lengthError = tooLongError(trimmed);
+    if (lengthError) {
+      setStatus({ kind: "error", text: lengthError });
+      return;
+    }
 
     const existing = tags.find((tag) => sameTagName(tag.name, trimmed));
     if (existing) {
@@ -83,6 +98,8 @@ export function TagsManager() {
   async function handleRename(tag: Tag, newName: string): Promise<string | null> {
     const trimmed = newName.trim();
     if (!trimmed) return "Tag name can't be empty.";
+    const lengthError = tooLongError(trimmed);
+    if (lengthError) return lengthError;
     const existing = tags.find((t) => t.id !== tag.id && sameTagName(t.name, trimmed));
     if (existing) return `A tag named "${existing.name}" already exists.`;
 
@@ -130,7 +147,6 @@ export function TagsManager() {
               id="tag-name"
               type="text"
               required
-              maxLength={TAG_NAME_MAX_LENGTH}
               value={name}
               onChange={(e) => {
                 setName(e.target.value);
@@ -292,7 +308,6 @@ function RenameTagForm({
           type="text"
           required
           autoFocus
-          maxLength={TAG_NAME_MAX_LENGTH}
           value={name}
           onChange={(e) => {
             setName(e.target.value);

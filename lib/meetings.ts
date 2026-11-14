@@ -3,7 +3,7 @@
 
 import type { MeetingSearch } from "./meeting-filters";
 import { getSupabase } from "./supabase/client";
-import { createKeyedRemoteStore, createRemoteStore } from "./remote-store";
+import { createKeyedRemoteStore, createRemoteStore, invalidate } from "./remote-store";
 
 export type Meeting = {
   id: string;
@@ -18,13 +18,30 @@ export type Meeting = {
 
 export type MeetingDraft = Omit<Meeting, "id">;
 
+// Same limits as the check constraints on `meetings` in
+// supabase/migrations/20261108120000_initial_schema.sql. Change both together.
+/** Longest meeting name, counted after trimming (the database trims before checking). */
+export const MEETING_NAME_MAX_LENGTH = 200;
+/** Longest notes text. */
+export const MEETING_NOTES_MAX_LENGTH = 20000;
+
+/** Whether `value` is a real calendar date written as YYYY-MM-DD. */
+function isDateString(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const [year, month, day] = match.slice(1).map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 /**
- * Returns the value as a Meeting, or null if it isn't one. Used for backup files. Meetings
- * saved before tags existed have no tagIds; they get an empty list.
+ * Returns the value as a Meeting, or null if it isn't one or the database would reject it (blank
+ * or too-long name, too-long notes, invalid date). Used for backup files. Meetings saved before
+ * tags existed have no tagIds; they get an empty list.
  */
 export function toMeeting(value: unknown): Meeting | null {
   if (typeof value !== "object" || value === null) return null;
@@ -33,9 +50,12 @@ export function toMeeting(value: unknown): Meeting | null {
     typeof m.id !== "string" ||
     typeof m.name !== "string" ||
     !m.name.trim() ||
+    m.name.trim().length > MEETING_NAME_MAX_LENGTH ||
     typeof m.date !== "string" ||
+    !isDateString(m.date) ||
     !isStringArray(m.participants) ||
-    typeof m.notes !== "string"
+    typeof m.notes !== "string" ||
+    m.notes.length > MEETING_NOTES_MAX_LENGTH
   ) {
     return null;
   }
@@ -48,11 +68,6 @@ export function toMeeting(value: unknown): Meeting | null {
     notes: m.notes,
     tagIds: isStringArray(m.tagIds) ? m.tagIds : [],
   };
-}
-
-/** Valid meetings from a parsed JSON array, skipping anything that isn't one. */
-export function toMeetings(values: unknown[]): Meeting[] {
-  return values.map(toMeeting).filter((m): m is Meeting => m !== null);
 }
 
 type MeetingRow = {
@@ -88,7 +103,8 @@ async function fetchMeetings(): Promise<Meeting[]> {
   return data.map(fromRow);
 }
 
-const store = createRemoteStore(fetchMeetings);
+// Reads meeting_tags too: each meeting carries its tag IDs.
+const store = createRemoteStore(fetchMeetings, { tables: ["meetings", "meeting_tags"] });
 
 /** The signed-in user's meetings, newest first. Suspends until loaded. */
 export const useMeetings = store.useValue;
@@ -121,7 +137,10 @@ async function searchMeetings(searchJson: string): Promise<Meeting[]> {
   return (data as unknown as MeetingRow[]).map(fromRow);
 }
 
-const searchStore = createKeyedRemoteStore(searchMeetings);
+// Reads tags too: the search text matches tag names.
+const searchStore = createKeyedRemoteStore(searchMeetings, {
+  tables: ["meetings", "meeting_tags", "tags"],
+});
 
 /**
  * The signed-in user's meetings matching `search` (see lib/meeting-filters.ts), newest first.
@@ -129,11 +148,6 @@ const searchStore = createKeyedRemoteStore(searchMeetings);
  */
 export function useMeetingSearch(search: MeetingSearch): Meeting[] {
   return searchStore.useValue(JSON.stringify(search));
-}
-
-/** Reloads meetings and any search results on screen (e.g. after a change). Never rejects. */
-export async function refreshMeetings() {
-  await Promise.all([store.refresh(), searchStore.refresh()]).catch(() => {});
 }
 
 function meetingColumns(draft: MeetingDraft) {
@@ -184,7 +198,7 @@ export async function createMeeting(draft: MeetingDraft): Promise<string> {
     }
     return data.id;
   } finally {
-    await refreshMeetings();
+    await invalidate("meetings", "meeting_tags");
   }
 }
 
@@ -212,7 +226,7 @@ export async function updateMeeting(id: string, draft: MeetingDraft) {
     await unlinkTags(id, previousTagIds.filter((tagId) => !draft.tagIds.includes(tagId)));
     await linkTags(id, draft.tagIds.filter((tagId) => !previousTagIds.includes(tagId)));
   } finally {
-    await refreshMeetings();
+    await invalidate("meetings", "meeting_tags");
   }
 }
 
@@ -222,6 +236,7 @@ export async function deleteMeeting(id: string) {
     const { error } = await getSupabase().from("meetings").delete().eq("id", id);
     if (error) throw error;
   } finally {
-    await refreshMeetings();
+    // Deleting a meeting also deletes its meeting_tags rows (on delete cascade).
+    await invalidate("meetings", "meeting_tags");
   }
 }

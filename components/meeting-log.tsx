@@ -197,8 +197,10 @@ function SearchBox({ urlQuery, loading }: { urlQuery: string; loading: boolean }
         autoComplete="off"
         spellCheck={false}
         // The browser's own clear button is hidden: it sat wherever the right padding ended.
-        // Ours below stays at the right edge.
-        className={`${input} pl-9 ${loading ? "pr-32" : "pr-10"} [&::-webkit-search-cancel-button]:appearance-none`}
+        // Ours below stays at the right edge. The right padding always leaves room for
+        // "Searching…" (plus the clear button once there's text), so typed text doesn't shift
+        // each time a search starts and ends.
+        className={`${input} pl-9 ${text ? "pr-32" : "pr-24"} [&::-webkit-search-cancel-button]:appearance-none`}
       />
       {loading && (
         <span

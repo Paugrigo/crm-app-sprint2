@@ -24,8 +24,8 @@ const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
 
 type Status = { kind: "success" | "error"; text: string };
 
-function plural(count: number, word: string): string {
-  return `${count} ${word}${count === 1 ? "" : "s"}`;
+function plural(count: number, word: string, pluralWord = `${word}s`): string {
+  return `${count} ${count === 1 ? word : pluralWord}`;
 }
 
 const descriptionClass = "text-sm text-muted";
@@ -141,8 +141,20 @@ function BackupSettings() {
       setStatus({ kind: "error", text: `"${file.name}" isn't a meetings backup file.` });
       return;
     }
+    const skippedCount = imported.skipped.meetings + imported.skipped.tags;
+    // Said out loud, so a meeting the database would reject isn't silently left behind.
+    const skippedNote =
+      skippedCount > 0
+        ? ` ${plural(skippedCount, "entry", "entries")} in the file can't be imported (blank or too-long names, too-long notes, or invalid dates) and will be skipped.`
+        : "";
     if (imported.meetings.length === 0 && imported.tags.length === 0) {
-      setStatus({ kind: "error", text: `"${file.name}" doesn't contain any meetings or tags.` });
+      setStatus({
+        kind: "error",
+        text:
+          skippedCount > 0
+            ? `Nothing in "${file.name}" can be imported: all ${plural(skippedCount, "entry", "entries")} have blank or too-long names, too-long notes, or invalid dates.`
+            : `"${file.name}" doesn't contain any meetings or tags.`,
+      });
       return;
     }
 
@@ -159,6 +171,7 @@ function BackupSettings() {
       (merged.updatedMeetings > 0
         ? ` ${plural(merged.updatedMeetings, "meeting")} already ${merged.updatedMeetings === 1 ? "exists" : "exist"} here and will be replaced by the version in the file.`
         : "") +
+      skippedNote +
       " Everything else you have is kept.";
     if (!window.confirm(question)) return;
 

@@ -2,9 +2,10 @@
 // later (also how data from the old browser-only version of the app moves into Supabase).
 // The format functions are pure; saveImport() writes a merge result to Supabase.
 
-import { refreshMeetings, toMeetings, type Meeting } from "./meetings";
+import { toMeeting, type Meeting } from "./meetings";
+import { invalidate } from "./remote-store";
 import { getSupabase } from "./supabase/client";
-import { isTag, refreshTags, sameTagName, type Tag } from "./tags";
+import { sameTagName, toTag, type Tag } from "./tags";
 
 const BACKUP_FORMAT = "crm-meetings-backup";
 
@@ -19,25 +20,44 @@ export function toBackup({ meetings, tags }: BackupData): string {
   );
 }
 
+/** A backup file's valid contents, and how many entries were left out as invalid. */
+export type ParsedBackup = BackupData & { skipped: { meetings: number; tags: number } };
+
+/** The entries `convert` accepts, and how many it rejected. */
+function validEntries<T>(values: unknown[], convert: (value: unknown) => T | null) {
+  const valid = values.map(convert).filter((v): v is T => v !== null);
+  return { valid, skipped: values.length - valid.length };
+}
+
 /**
  * Reads a backup file. Accepts version 1 files (no tags) and a bare array of meetings (the
- * raw localStorage format). Returns null if the file isn't a backup; skips invalid entries.
+ * raw localStorage format). Returns null if the file isn't a backup. Entries the database would
+ * reject (see toMeeting() and toTag()) are left out and counted in `skipped`.
  */
-export function fromBackup(text: string): BackupData | null {
+export function fromBackup(text: string): ParsedBackup | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
     return null;
   }
-  if (Array.isArray(parsed)) return { meetings: toMeetings(parsed), tags: [] };
-  if (typeof parsed !== "object" || parsed === null) return null;
-
-  const { meetings, tags } = parsed as Record<string, unknown>;
-  if (!Array.isArray(meetings)) return null;
+  let rawMeetings: unknown[];
+  let rawTags: unknown[] = [];
+  if (Array.isArray(parsed)) {
+    rawMeetings = parsed;
+  } else {
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const { meetings, tags } = parsed as Record<string, unknown>;
+    if (!Array.isArray(meetings)) return null;
+    rawMeetings = meetings;
+    if (Array.isArray(tags)) rawTags = tags;
+  }
+  const meetings = validEntries(rawMeetings, toMeeting);
+  const tags = validEntries(rawTags, toTag);
   return {
-    meetings: toMeetings(meetings),
-    tags: Array.isArray(tags) ? tags.filter(isTag) : [],
+    meetings: meetings.valid,
+    tags: tags.valid,
+    skipped: { meetings: meetings.skipped, tags: tags.skipped },
   };
 }
 
@@ -222,6 +242,6 @@ export async function saveImport(current: BackupData, merged: MergeResult) {
       if (error) throw error;
     }
   } finally {
-    await Promise.all([refreshTags().catch(() => {}), refreshMeetings()]);
+    await invalidate("tags", "meetings", "meeting_tags");
   }
 }

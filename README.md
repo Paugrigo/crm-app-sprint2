@@ -43,17 +43,17 @@ Delivered on its own `feat/server-side-search` branch and merged in [pull reques
 Also completed, as part of the Supabase move in [pull request #3](https://github.com/Paugrigo/crm-app-sprint2/pull/3) (`feat/supabase-auth`) rather than on branches of their own:
 
 - **Self-service sign-up page.** New users register themselves at `/sign-up` with an email address and password. With email confirmation on, the page asks them to check their inbox; the link in Supabase's email lands on `/auth/confirm`, which signs them in and opens the meeting log.
-- **Track database changes with migrations.** Every change to the database structure (tables, columns, Row Level Security policies, privileges, and the search function) is a SQL migration in [`supabase/migrations/`](supabase/migrations), applied with the Supabase CLI (`supabase db push`). The folder holds the full history of how the database was built, so a new project can be set up from it.
+- **Track database changes with migrations.** Every change to the database structure (tables, columns, Row Level Security policies, privileges, and the search function) is a SQL migration in [`supabase/migrations/`](supabase/migrations), applied with the Supabase CLI (`supabase db push --remote`). The folder holds the full history of how the database was built, so a new project can be set up from it.
 
 ## Run it locally
 
-You need [Node.js](https://nodejs.org) 20.9 or newer and a Supabase project (the free plan is enough).
+You need [Node.js](https://nodejs.org) 20.9 or newer and a Supabase project (the free plan is enough) on Postgres 17, which new projects get by default. On an older project, skip `20261108161220_revoke_maintain_privilege.sql`: the MAINTAIN privilege it revokes only exists from Postgres 17.
 
 ### 1. Set up the database
 
 Apply the migrations in [`supabase/migrations/`](supabase/migrations) to your Supabase project, in filename order. Either:
 
-- with the [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/getting-started): `supabase link --project-ref <your-project-ref>`, then `supabase db push`, or
+- with the [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/getting-started): `supabase link --project-ref <your-project-ref>`, then `supabase db push --remote` (CLI v3 pushes to a local Docker database unless you pass `--remote`), or
 - in the dashboard's **SQL Editor**: paste and run each file in order.
 
 ### 2. Set the environment variables

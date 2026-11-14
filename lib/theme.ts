@@ -5,7 +5,7 @@
 // To avoid a flash of the wrong theme on page load, the choice is also copied into a cookie that
 // an inline script reads before the first paint (see lib/theme-cookie.ts).
 
-import { createRemoteStore } from "./remote-store";
+import { createRemoteStore, invalidate } from "./remote-store";
 import { readThemeCookie, writeThemeCookie } from "./theme-cookie";
 import { getSupabase } from "./supabase/client";
 
@@ -32,7 +32,7 @@ async function fetchThemePreference(): Promise<ThemePreference> {
   return isThemePreference(data?.theme) ? data.theme : "system";
 }
 
-const store = createRemoteStore(fetchThemePreference);
+const store = createRemoteStore(fetchThemePreference, { tables: ["user_settings"] });
 
 /** The signed-in user's theme preference. Suspends until loaded. */
 export const useThemePreference = store.useValue;
@@ -53,6 +53,6 @@ export async function saveThemePreference(preference: ThemePreference) {
       .upsert({ theme: preference }, { onConflict: "user_id" });
     if (error) throw error;
   } finally {
-    await store.refresh().catch(() => {});
+    await invalidate("user_settings");
   }
 }
