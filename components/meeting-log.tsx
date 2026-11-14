@@ -6,13 +6,15 @@ import { browser } from "react-dom";
 import {
   NO_FILTERS,
   readMeetingFilters,
+  readMeetingPage,
   SEARCH_MAX_LENGTH,
   toMeetingSearch,
   writeMeetingFilters,
+  writeMeetingPage,
   type MeetingFilters,
   type MeetingSearch,
 } from "@/lib/meeting-filters";
-import { deleteMeeting, useMeetingSearch, useMeetings } from "@/lib/meetings";
+import { deleteMeeting, MEETINGS_PAGE_SIZE, useMeetingPage } from "@/lib/meetings";
 import { describeError } from "@/lib/remote-store";
 import { useTags } from "@/lib/tags";
 import { MeetingFilterBar } from "./meeting-filter-bar";
@@ -41,7 +43,9 @@ function isFiltered(search: MeetingSearch): boolean {
 export function MeetingLog() {
   use(browser("Meetings are loaded from Supabase in the browser."));
 
-  const urlFilters = readMeetingFilters(useSearchParams());
+  const params = useSearchParams();
+  const urlFilters = readMeetingFilters(params);
+  const page = readMeetingPage(params);
   // Ignore tags that no longer exist (e.g. deleted since the link was bookmarked).
   const tags = useTags();
   const filters: MeetingFilters = {
@@ -49,12 +53,16 @@ export function MeetingLog() {
     tagIds: urlFilters.tagIds.filter((id) => tags.some((t) => t.id === id)),
   };
   const search = toMeetingSearch(filters);
+  const searchKey = JSON.stringify(search);
   // While the next results load, keep showing the current ones (dimmed) instead of the
   // Suspense fallback. Compared as JSON, since a new object is built on every render.
-  const searchKey = JSON.stringify(search);
-  const shownKey = useDeferredValue(searchKey);
-  const shown = JSON.parse(shownKey) as MeetingSearch;
-  const loading = shownKey !== searchKey;
+  const pageKey = JSON.stringify({ search, page });
+  const shownKey = useDeferredValue(pageKey);
+  const shown = JSON.parse(shownKey) as { search: MeetingSearch; page: number };
+  const loading = shownKey !== pageKey;
+  // Loading because the search changed (not only the page): the search box says so.
+  const searching = loading && JSON.stringify(shown.search) !== searchKey;
+  const topRef = useRef<HTMLElement>(null);
   const [error, setError] = useState<string | null>(null);
   // Bumped by "Clear all": remounts the search box, which drops text typed but not yet searched
   // and its pending debounce timer (that would otherwise write the text back into the URL).
@@ -63,6 +71,12 @@ export function MeetingLog() {
   function clearAll() {
     setSearchBoxKey((key) => key + 1);
     writeMeetingFilters(NO_FILTERS);
+  }
+
+  function goToPage(next: number) {
+    writeMeetingPage(next);
+    // The page controls sit below the list; start reading the new page from its top.
+    topRef.current?.scrollIntoView({ block: "start" });
   }
 
   async function handleDelete(id: string) {
@@ -75,8 +89,8 @@ export function MeetingLog() {
   }
 
   return (
-    <section>
-      <SearchBox key={searchBoxKey} urlQuery={filters.query} loading={loading} />
+    <section ref={topRef}>
+      <SearchBox key={searchBoxKey} urlQuery={filters.query} loading={searching} />
       <MeetingFilterBar filters={filters} onChange={updateFilters} onClearAll={clearAll} />
       {error && (
         <p role="alert" className={`${errorBox} mb-4`}>
@@ -84,39 +98,53 @@ export function MeetingLog() {
         </p>
       )}
       <div aria-busy={loading} className={`transition-opacity ${loading ? "opacity-60" : ""}`}>
-        {isFiltered(shown) ? (
-          <SearchResults search={shown} onDelete={handleDelete} onClear={clearAll} />
-        ) : (
-          <AllMeetings onDelete={handleDelete} />
-        )}
+        <Results
+          search={shown.search}
+          page={shown.page}
+          onDelete={handleDelete}
+          onClear={clearAll}
+          onPageChange={goToPage}
+          changingPage={loading && !searching}
+        />
       </div>
     </section>
   );
 }
 
-function AllMeetings({ onDelete }: { onDelete: (id: string) => void }) {
-  return <MeetingList meetings={useMeetings()} onDelete={onDelete} />;
-}
-
-/** Only the matching meetings, as returned by the database. */
-function SearchResults({
+/**
+ * One page of the meetings matching the search, as returned by the database (all meetings
+ * when nothing is searched or filtered).
+ */
+function Results({
   search,
+  page,
   onDelete,
   onClear,
+  onPageChange,
+  changingPage,
 }: {
   search: MeetingSearch;
+  page: number;
   onDelete: (id: string) => void;
   onClear: () => void;
+  onPageChange: (page: number) => void;
+  changingPage: boolean;
 }) {
+  const { meetings, total } = useMeetingPage(search, page);
   return (
     <MeetingList
-      meetings={useMeetingSearch(search)}
+      meetings={meetings}
+      total={total}
+      page={page}
+      pageSize={MEETINGS_PAGE_SIZE}
       onDelete={onDelete}
-      search={{
-        query: search.query,
-        filtered: isFiltered({ ...search, query: "" }),
-        onClear,
-      }}
+      onPageChange={onPageChange}
+      changingPage={changingPage}
+      search={
+        isFiltered(search)
+          ? { query: search.query, filtered: isFiltered({ ...search, query: "" }), onClear }
+          : undefined
+      }
     />
   );
 }
@@ -197,8 +225,10 @@ function SearchBox({ urlQuery, loading }: { urlQuery: string; loading: boolean }
         autoComplete="off"
         spellCheck={false}
         // The browser's own clear button is hidden: it sat wherever the right padding ended.
-        // Ours below stays at the right edge.
-        className={`${input} pl-9 ${loading ? "pr-32" : "pr-10"} [&::-webkit-search-cancel-button]:appearance-none`}
+        // Ours below stays at the right edge. The right padding always leaves room for
+        // "Searching…" (plus the clear button once there's text), so typed text doesn't shift
+        // each time a search starts and ends.
+        className={`${input} pl-9 ${text ? "pr-32" : "pr-24"} [&::-webkit-search-cancel-button]:appearance-none`}
       />
       {loading && (
         <span

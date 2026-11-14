@@ -8,6 +8,8 @@
 //   &people=all             the meeting needs all of those people (default: any of them)
 //   &date=this-month        a preset (this-month, this-year, upcoming, past), or
 //   &from=2026-01-01&to=…   a custom range (either end optional)
+//   &page=2                 page of the results (1-based; left out for page 1). Changing the
+//                           search or a filter drops it, so a new search starts on page 1.
 //
 // Pure functions; components read the URL with useSearchParams() and write it with
 // writeMeetingFilters().
@@ -75,7 +77,7 @@ export function readMeetingFilters(params: URLSearchParams): MeetingFilters {
 /** Writes the filters into the current URL without a navigation or a new history entry. */
 export function writeMeetingFilters(filters: MeetingFilters) {
   const url = new URL(window.location.href);
-  for (const key of ["q", "tag", "tags", "person", "people", "date", "from", "to"]) {
+  for (const key of ["q", "tag", "tags", "person", "people", "date", "from", "to", "page"]) {
     url.searchParams.delete(key);
   }
   const p = url.searchParams;
@@ -89,6 +91,20 @@ export function writeMeetingFilters(filters: MeetingFilters) {
     if (filters.date.from) p.set("from", filters.date.from);
     if (filters.date.to) p.set("to", filters.date.to);
   }
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
+/** The results page in the URL (1-based); 1 when missing or not a whole number from 1 up. */
+export function readMeetingPage(params: URLSearchParams): number {
+  const value = params.get("page") ?? "";
+  return /^[1-9]\d{0,5}$/.test(value) ? Number(value) : 1;
+}
+
+/** Writes the results page into the current URL, like writeMeetingFilters(). */
+export function writeMeetingPage(page: number) {
+  const url = new URL(window.location.href);
+  if (page > 1) url.searchParams.set("page", String(page));
+  else url.searchParams.delete("page");
   window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
 }
 

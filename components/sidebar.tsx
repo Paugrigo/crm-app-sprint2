@@ -6,10 +6,8 @@ import { Suspense, use, useState } from "react";
 import { browser } from "react-dom";
 import { signOut } from "@/lib/auth-actions";
 import { formatMeetingDate } from "@/lib/format-date";
-import { useMeetings } from "@/lib/meetings";
+import { RECENT_MEETINGS_LIMIT, useMeetingCount, useRecentMeetings } from "@/lib/meetings";
 import { buttonPrimary, buttonSecondary, label } from "./ui";
-
-const RECENT_LIMIT = 8;
 
 // The active item gets a soft amber background and a 2px amber bar on its left edge.
 const linkBase =
@@ -232,10 +230,9 @@ function MainLinks({
 
 function RecentMeetings({ pathname, onNavigate }: { pathname: string; onNavigate: () => void }) {
   use(browser("Meetings are loaded from Supabase in the browser."));
-  const meetings = useMeetings();
-
-  // Newest first, like the meeting list; ISO dates sort correctly as strings.
-  const recent = [...meetings].sort((a, b) => b.date.localeCompare(a.date)).slice(0, RECENT_LIMIT);
+  // Newest first, like the meeting log; the database sorts and limits them.
+  const recent = useRecentMeetings();
+  const total = useMeetingCount();
 
   return (
     <div className="mt-6">
@@ -269,13 +266,13 @@ function RecentMeetings({ pathname, onNavigate }: { pathname: string; onNavigate
           })}
         </ul>
       )}
-      {meetings.length > RECENT_LIMIT && (
+      {total > RECENT_MEETINGS_LIMIT && (
         <Link
           href="/"
           onClick={onNavigate}
           className="mt-2 block px-3 font-mono text-xs text-muted hover:text-accent-fg"
         >
-          View all {meetings.length} →
+          View all {total} →
         </Link>
       )}
     </div>

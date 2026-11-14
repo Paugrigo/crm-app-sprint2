@@ -2,9 +2,10 @@
 // later (also how data from the old browser-only version of the app moves into Supabase).
 // The format functions are pure; saveImport() writes a merge result to Supabase.
 
-import { refreshMeetings, toMeetings, type Meeting } from "./meetings";
+import { fetchMeetingsByIds, toMeeting, type Meeting } from "./meetings";
+import { invalidate } from "./remote-store";
 import { getSupabase } from "./supabase/client";
-import { isTag, refreshTags, sameTagName, type Tag } from "./tags";
+import { sameTagName, toTag, type Tag } from "./tags";
 
 const BACKUP_FORMAT = "crm-meetings-backup";
 
@@ -19,25 +20,44 @@ export function toBackup({ meetings, tags }: BackupData): string {
   );
 }
 
+/** A backup file's valid contents, and how many entries were left out as invalid. */
+export type ParsedBackup = BackupData & { skipped: { meetings: number; tags: number } };
+
+/** The entries `convert` accepts, and how many it rejected. */
+function validEntries<T>(values: unknown[], convert: (value: unknown) => T | null) {
+  const valid = values.map(convert).filter((v): v is T => v !== null);
+  return { valid, skipped: values.length - valid.length };
+}
+
 /**
  * Reads a backup file. Accepts version 1 files (no tags) and a bare array of meetings (the
- * raw localStorage format). Returns null if the file isn't a backup; skips invalid entries.
+ * raw localStorage format). Returns null if the file isn't a backup. Entries the database would
+ * reject (see toMeeting() and toTag()) are left out and counted in `skipped`.
  */
-export function fromBackup(text: string): BackupData | null {
+export function fromBackup(text: string): ParsedBackup | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
     return null;
   }
-  if (Array.isArray(parsed)) return { meetings: toMeetings(parsed), tags: [] };
-  if (typeof parsed !== "object" || parsed === null) return null;
-
-  const { meetings, tags } = parsed as Record<string, unknown>;
-  if (!Array.isArray(meetings)) return null;
+  let rawMeetings: unknown[];
+  let rawTags: unknown[] = [];
+  if (Array.isArray(parsed)) {
+    rawMeetings = parsed;
+  } else {
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const { meetings, tags } = parsed as Record<string, unknown>;
+    if (!Array.isArray(meetings)) return null;
+    rawMeetings = meetings;
+    if (Array.isArray(tags)) rawTags = tags;
+  }
+  const meetings = validEntries(rawMeetings, toMeeting);
+  const tags = validEntries(rawTags, toTag);
   return {
-    meetings: toMeetings(meetings),
-    tags: Array.isArray(tags) ? tags.filter(isTag) : [],
+    meetings: meetings.valid,
+    tags: tags.valid,
+    skipped: { meetings: meetings.skipped, tags: tags.skipped },
   };
 }
 
@@ -45,6 +65,8 @@ export type MergeResult = BackupData & {
   newMeetings: number;
   updatedMeetings: number;
   newTags: number;
+  /** Existing tags merged into another tag with the same name (`from` is deleted on save). */
+  tagMerges: { from: string; to: string }[];
 };
 
 /**
@@ -54,7 +76,7 @@ export type MergeResult = BackupData & {
  * That includes an existing tag that the backup renames to another tag's name: it is merged
  * too, and its meetings, here or in the backup, move to the other tag.
  */
-export function mergeBackup(current: BackupData, imported: BackupData): MergeResult {
+function mergeBackup(current: BackupData, imported: BackupData): MergeResult {
   // Tag IDs merged into another tag, mapped to that tag's ID. Other IDs stay as they are.
   const mergedTagIds = new Map<string, string>();
   function resolveTagId(id: string): string {
@@ -98,6 +120,9 @@ export function mergeBackup(current: BackupData, imported: BackupData): MergeRes
     newMeetings: importedMeetings.length - updatedMeetings,
     updatedMeetings,
     newTags,
+    tagMerges: current.tags
+      .filter((t) => mergedTagIds.has(t.id))
+      .map((t) => ({ from: t.id, to: resolveTagId(t.id) })),
   };
 }
 
@@ -119,7 +144,7 @@ async function derivedUuid(key: string): Promise<string> {
  * derived from the user and the original ID, so importing the same file again still updates the
  * same items instead of duplicating them. IDs of the user's own items are kept.
  */
-export async function localizeBackup(current: BackupData, imported: BackupData): Promise<BackupData> {
+async function localizeBackup(current: BackupData, imported: BackupData): Promise<BackupData> {
   const { data, error } = await getSupabase().auth.getClaims();
   const userId = data?.claims?.sub;
   if (error || !userId) throw error ?? new Error("You're signed out. Reload the page to sign in again.");
@@ -146,6 +171,26 @@ export async function localizeBackup(current: BackupData, imported: BackupData):
   return { meetings, tags };
 }
 
+/** What importing a backup would change, worked out before asking the user to confirm. */
+export type ImportPlan = {
+  /** The user's data that the import touches: all their tags, and their meetings in the file. */
+  current: BackupData;
+  merged: MergeResult;
+};
+
+/**
+ * Works out an import without loading all of the user's meetings: only the ones the file could
+ * update are fetched (by ID: the file's own IDs, then the IDs localizeBackup() gives them, which
+ * exist if the same file was imported before). `tags` is all of the user's tags. Pass the result
+ * to saveImport() once the user confirms.
+ */
+export async function planImport(imported: BackupData, tags: Tag[]): Promise<ImportPlan> {
+  const ownMeetings = await fetchMeetingsByIds(imported.meetings.map((m) => m.id));
+  const localized = await localizeBackup({ meetings: ownMeetings, tags }, imported);
+  const current = { meetings: await fetchMeetingsByIds(localized.meetings.map((m) => m.id)), tags };
+  return { current, merged: mergeBackup(current, localized) };
+}
+
 function sameMeeting(a: Meeting, b: Meeting): boolean {
   return (
     a.name === b.name &&
@@ -157,71 +202,37 @@ function sameMeeting(a: Meeting, b: Meeting): boolean {
 }
 
 /**
- * Writes the result of mergeBackup(current, imported) to Supabase, changing only what differs
- * from `current`: new or renamed tags, new or changed meetings and their tag links, and tags
- * that were merged into another tag. Throws if a request fails (earlier steps stay saved).
+ * Writes an import plan (planImport()) to Supabase, sending only what differs from `current`: new or renamed tags, new or changed meetings with their tags, and tags that
+ * were merged into another tag. It's one database call (import_backup, see supabase/migrations),
+ * so it either saves everything or nothing. Throws if it fails.
  */
-export async function saveImport(current: BackupData, merged: MergeResult) {
-  const supabase = getSupabase();
+export async function saveImport({ current, merged }: ImportPlan) {
   try {
     const currentTags = new Map(current.tags.map((t) => [t.id, t]));
     const changedTags = merged.tags.filter((t) => currentTags.get(t.id)?.name !== t.name);
-    if (changedTags.length > 0) {
-      const { error } = await supabase
-        .from("tags")
-        .upsert(changedTags.map(({ id, name }) => ({ id, name })), { onConflict: "id" });
-      if (error) throw error;
-    }
 
     const currentMeetings = new Map(current.meetings.map((m) => [m.id, m]));
     const changedMeetings = merged.meetings.filter((m) => {
       const existing = currentMeetings.get(m.id);
       return !existing || !sameMeeting(existing, m);
     });
-    if (changedMeetings.length > 0) {
-      const { error } = await supabase.from("meetings").upsert(
-        changedMeetings.map(({ id, name, date, participants, notes }) => ({
-          id,
-          name,
-          date,
-          participants,
-          notes,
-        })),
-        { onConflict: "id" },
-      );
-      if (error) throw error;
-    }
 
-    const tagIds = new Set(merged.tags.map((t) => t.id));
-    for (const meeting of changedMeetings) {
-      const before = currentMeetings.get(meeting.id)?.tagIds ?? [];
-      // Skip IDs of tags that don't exist (e.g. deleted before the backup was made).
-      const after = meeting.tagIds.filter((id) => tagIds.has(id));
-      const removed = before.filter((id) => !after.includes(id));
-      const added = after.filter((id) => !before.includes(id));
-      if (removed.length > 0) {
-        const { error } = await supabase
-          .from("meeting_tags")
-          .delete()
-          .eq("meeting_id", meeting.id)
-          .in("tag_id", removed);
-        if (error) throw error;
-      }
-      if (added.length > 0) {
-        const { error } = await supabase
-          .from("meeting_tags")
-          .insert(added.map((tagId) => ({ meeting_id: meeting.id, tag_id: tagId })));
-        if (error) throw error;
-      }
-    }
-
-    // Existing tags that the backup merged into another tag (same name).
-    const mergedAway = current.tags.filter((t) => !tagIds.has(t.id)).map((t) => t.id);
-    if (mergedAway.length > 0) {
-      const { error } = await supabase.from("tags").delete().in("id", mergedAway);
-      if (error) throw error;
-    }
+    const { error } = await getSupabase().rpc("import_backup", {
+      changed_tags: changedTags.map(({ id, name }) => ({ id, name })),
+      // Tag IDs that aren't the user's tags (e.g. deleted before the backup was made) are
+      // skipped by the database.
+      changed_meetings: changedMeetings.map(({ id, name, date, participants, notes, tagIds }) => ({
+        id,
+        name,
+        date,
+        participants,
+        notes,
+        tag_ids: tagIds,
+      })),
+      tag_merges: merged.tagMerges,
+    });
+    if (error) throw error;
   } finally {
-    await Promise.all([refreshTags().catch(() => {}), refreshMeetings()]);
+    await invalidate("tags", "meetings", "meeting_tags");
   }
 }

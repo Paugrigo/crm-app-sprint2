@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import type { MeetingDraft } from "@/lib/meetings";
+import { MEETING_NAME_MAX_LENGTH, type MeetingDraft } from "@/lib/meetings";
 import { sortTags, useTags } from "@/lib/tags";
 import { DatePicker } from "./date-picker";
 import { buttonPrimary, buttonSecondary, input, label, textLink } from "./ui";
@@ -15,9 +15,6 @@ function todayAsDateInputValue(): string {
 }
 
 const labelClass = `mb-1.5 block ${label}`;
-
-/** Same limit as the database's check on meetings.name (1–200 characters after trimming). */
-const NAME_MAX_LENGTH = 200;
 
 /**
  * Form for logging a meeting. Pass `initial` to edit an existing meeting instead: the
@@ -43,8 +40,10 @@ export function MeetingForm({
   const [notes, setNotes] = useState(initial?.notes ?? "");
   const [tagIds, setTagIds] = useState<string[]>(initial?.tagIds ?? []);
   const [saving, setSaving] = useState(false);
-  // Set when saving was tried with a blank name. The browser's `required` alone lets a name of
-  // only spaces through, which the database then rejects with an unreadable error.
+  // Set when saving was tried with a blank or too-long name. The browser's `required` alone lets
+  // a name of only spaces through, which the database then rejects with an unreadable error. The
+  // length is checked here rather than with `maxLength`, which would silently cut off a pasted
+  // name and count surrounding spaces the database ignores.
   const [nameError, setNameError] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const tags = sortTags(useTags());
@@ -80,6 +79,13 @@ export function MeetingForm({
     if (saving) return;
     if (!name.trim()) {
       setNameError("Enter a meeting name. Spaces alone don't count.");
+      nameRef.current?.focus();
+      return;
+    }
+    if (name.trim().length > MEETING_NAME_MAX_LENGTH) {
+      setNameError(
+        `Shorten the name to ${MEETING_NAME_MAX_LENGTH} characters or fewer (it has ${name.trim().length}).`,
+      );
       nameRef.current?.focus();
       return;
     }
@@ -124,7 +130,6 @@ export function MeetingForm({
             id="meeting-name"
             type="text"
             required
-            maxLength={NAME_MAX_LENGTH}
             value={name}
             onChange={(e) => {
               setName(e.target.value);

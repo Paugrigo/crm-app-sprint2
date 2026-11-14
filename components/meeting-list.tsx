@@ -12,19 +12,57 @@ function weekday(date: string): string {
 }
 
 /**
- * Meetings as rows, newest first. With `search`, they're search results: the header counts
- * matches, and an empty list says nothing matched (with a button that calls `search.onClear`).
+ * One page of meetings as rows, newest first. When `total` needs more than one page, controls
+ * below the list call `onPageChange` with the page to show. With `search`, they're search
+ * results: the header counts matches, and an empty list says nothing matched (with a button
+ * that calls `search.onClear`).
  */
 export function MeetingList({
   meetings,
+  total,
+  page,
+  pageSize,
   onDelete,
+  onPageChange,
+  changingPage = false,
   search,
 }: {
+  /** The meetings on this page. */
   meetings: Meeting[];
+  /** How many meetings there are in all (or match the search), on any page. */
+  total: number;
+  /** The page shown, 1-based. */
+  page: number;
+  pageSize: number;
   onDelete: (id: string) => void;
+  onPageChange: (page: number) => void;
+  /** Set while another page loads. */
+  changingPage?: boolean;
   /** Set when the list is filtered: the search text ("" if none) and whether filters are set. */
   search?: { query: string; filtered: boolean; onClear: () => void };
 }) {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+
+  // A page past the end: its meetings were deleted, or the link is old.
+  if (meetings.length === 0 && total > 0) {
+    return (
+      <div className={emptyState}>
+        <p className={label}>Page {page}</p>
+        <p className="mt-2 font-medium text-fg">This page doesn&rsquo;t exist</p>
+        <p className="mt-1 text-sm text-muted">
+          {search ? "The results" : "The meetings"} end on page {pageCount}.
+        </p>
+        <button
+          type="button"
+          onClick={() => onPageChange(pageCount)}
+          className={`${buttonSecondary} mt-4`}
+        >
+          Go to page {pageCount}
+        </button>
+      </div>
+    );
+  }
+
   if (meetings.length === 0 && search) {
     const { query, filtered, onClear } = search;
     return (
@@ -72,9 +110,7 @@ export function MeetingList({
       <div className={panelHeader}>
         <h2 className={label}>{search ? "Search results" : "Meetings"}</h2>
         <span className="font-mono text-xs text-muted">
-          {search
-            ? `${meetings.length} ${meetings.length === 1 ? "match" : "matches"}`
-            : `${meetings.length} total`}
+          {search ? `${total} ${total === 1 ? "match" : "matches"}` : `${total} total`}
         </span>
       </div>
       <ul className="divide-y divide-line">
@@ -123,6 +159,37 @@ export function MeetingList({
           </li>
         ))}
       </ul>
+      {pageCount > 1 && (
+        <nav
+          aria-label="Pages"
+          className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-4 py-3"
+        >
+          <span className="font-mono text-xs text-muted">
+            {(page - 1) * pageSize + 1}–{(page - 1) * pageSize + meetings.length} of {total}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onPageChange(page - 1)}
+              disabled={page <= 1 || changingPage}
+              className={buttonSecondary}
+            >
+              ← Newer
+            </button>
+            <span className="font-mono text-xs text-muted" aria-live="polite">
+              {changingPage ? "Loading…" : `Page ${page} of ${pageCount}`}
+            </span>
+            <button
+              type="button"
+              onClick={() => onPageChange(page + 1)}
+              disabled={page >= pageCount || changingPage}
+              className={buttonSecondary}
+            >
+              Older →
+            </button>
+          </div>
+        </nav>
+      )}
     </section>
   );
 }

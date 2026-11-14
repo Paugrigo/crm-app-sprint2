@@ -12,7 +12,7 @@ A simple CRM for logging meetings, styled like a finance terminal. Sign up with 
 
 - **Accounts:** sign up and sign in with email and password (`/sign-up`, `/sign-in`). Every other page is private: a signed-out visitor is redirected to the sign-in page by the server before the page loads. The sidebar shows the signed-in email and a Sign out button.
 - **Log meetings** with a name, date, participants, notes, and tags. Each meeting has its own bookmarkable page, where you can edit or delete it.
-- **Meeting log:** every meeting, newest first, with a sidebar menu showing the 8 most recent.
+- **Meeting log:** every meeting, newest first, 100 per page with Newer/Older page controls, and a sidebar menu showing the 8 most recent. Each page downloads only what it shows, so the app stays fast with thousands of meetings.
 - **Search and filters:** search meeting names, notes, participants, and tag names, and filter by tags, people (each with an Any/All switch), and date (this month, this year, upcoming, past, or a custom range). The database does the matching; see [Optional task](#optional-task-server-side-search).
 - **Tags:** create, rename, and delete tags on the Tags page, then pick them when logging a meeting. Renaming a tag updates it on every meeting; deleting it removes it from its meetings but keeps the meetings.
 - **Statistics:** meetings this month vs last month, meetings per month for the last year, who you meet most, who you haven't met in a while, and breakdowns by tag and day of the week.
@@ -24,7 +24,8 @@ A simple CRM for logging meetings, styled like a finance terminal. Sign up with 
 
 - All data lives in a Supabase Postgres database: tables `meetings`, `tags`, `meeting_tags`, and `user_settings`. Nothing is kept in `localStorage` or `sessionStorage`.
 - Every table has a `user_id` and **Row Level Security** enabled, with policies that let a user select, insert, update, and delete only their own rows. This holds even when the database is queried directly with the public key, outside the app.
-- The schema, policies, and search function are SQL migrations in [`supabase/migrations/`](supabase/migrations), so the database can be recreated from scratch.
+- Saving a meeting with its tags, and importing a backup, each happen in one database call (Postgres functions `save_meeting` and `import_backup`, which also run as the signed-in user under Row Level Security), so a failure partway never leaves half-saved data.
+- The schema, policies, and database functions are SQL migrations in [`supabase/migrations/`](supabase/migrations), so the database can be recreated from scratch.
 
 ## Optional task: Server-side search
 
@@ -43,17 +44,17 @@ Delivered on its own `feat/server-side-search` branch and merged in [pull reques
 Also completed, as part of the Supabase move in [pull request #3](https://github.com/Paugrigo/crm-app-sprint2/pull/3) (`feat/supabase-auth`) rather than on branches of their own:
 
 - **Self-service sign-up page.** New users register themselves at `/sign-up` with an email address and password. With email confirmation on, the page asks them to check their inbox; the link in Supabase's email lands on `/auth/confirm`, which signs them in and opens the meeting log.
-- **Track database changes with migrations.** Every change to the database structure (tables, columns, Row Level Security policies, privileges, and the search function) is a SQL migration in [`supabase/migrations/`](supabase/migrations), applied with the Supabase CLI (`supabase db push`). The folder holds the full history of how the database was built, so a new project can be set up from it.
+- **Track database changes with migrations.** Every change to the database structure (tables, columns, Row Level Security policies, privileges, and the search function) is a SQL migration in [`supabase/migrations/`](supabase/migrations), applied with the Supabase CLI (`supabase db push --remote`). The folder holds the full history of how the database was built, so a new project can be set up from it.
 
 ## Run it locally
 
-You need [Node.js](https://nodejs.org) 20.9 or newer and a Supabase project (the free plan is enough).
+You need [Node.js](https://nodejs.org) 20.9 or newer and a Supabase project (the free plan is enough) on Postgres 17, which new projects get by default. On an older project, skip `20261108161220_revoke_maintain_privilege.sql`: the MAINTAIN privilege it revokes only exists from Postgres 17.
 
 ### 1. Set up the database
 
 Apply the migrations in [`supabase/migrations/`](supabase/migrations) to your Supabase project, in filename order. Either:
 
-- with the [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/getting-started): `supabase link --project-ref <your-project-ref>`, then `supabase db push`, or
+- with the [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/getting-started): `supabase link --project-ref <your-project-ref>`, then `supabase db push --remote` (CLI v3 pushes to a local Docker database unless you pass `--remote`), or
 - in the dashboard's **SQL Editor**: paste and run each file in order.
 
 ### 2. Set the environment variables

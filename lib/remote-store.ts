@@ -1,6 +1,7 @@
 // An in-memory copy of data loaded from Supabase, shared by every component that reads it.
-// Supabase is the source of truth: after each create, edit, or delete, the caller refetches
-// with refresh(), and every subscribed component re-renders.
+// Supabase is the source of truth: after each create, edit, or delete, the caller passes the
+// tables it changed to invalidate(), which refetches every store that reads one of them, and
+// every subscribed component re-renders.
 //
 // Why a shared store and not per-component state: with Cache Components, Next.js keeps up to 3
 // visited pages alive but hidden (React <Activity>) instead of unmounting them. Data copied into
@@ -19,11 +20,42 @@ const KEYED_STORE_LIMIT = 20;
 /** Refetch when the tab becomes visible again, at most this often, to pick up other tabs' changes. */
 const FOCUS_REFRESH_INTERVAL_MS = 30_000;
 
+/** The database tables the app reads and writes. */
+export type Table = "meetings" | "meeting_tags" | "tags" | "user_settings";
+
+/** Options for createRemoteStore() and createKeyedRemoteStore(). */
+export type RemoteStoreOptions = {
+  /**
+   * Every table the load function reads, including ones only joined or matched against (e.g. a
+   * search that matches tag names reads `tags`). invalidate() uses this to decide what to reload,
+   * so a missing table means pages showing stale data after a change.
+   */
+  tables: readonly Table[];
+};
+
+/** Every store created at module level, with the tables it reads. See invalidate(). */
+const registry: { tables: ReadonlySet<Table>; refresh: () => Promise<void> }[] = [];
+
+function register(tables: readonly Table[], refresh: () => Promise<void>) {
+  registry.push({ tables: new Set(tables), refresh });
+}
+
+/**
+ * Reloads every store that reads any of `tables`. Call it after a create, edit, or delete (also
+ * when it failed: part of it may have been saved) with every table the change wrote, including
+ * rows the database removes on its own (`on delete cascade`, e.g. deleting a tag deletes its
+ * `meeting_tags` rows). Never rejects: a store that fails to reload keeps showing what it had.
+ */
+export async function invalidate(...tables: Table[]): Promise<void> {
+  const reloads = registry
+    .filter((store) => tables.some((table) => store.tables.has(table)))
+    .map((store) => store.refresh().catch(() => {}));
+  await Promise.all(reloads);
+}
+
 export type RemoteStore<T> = {
   /** The current data. Suspends until the first load finishes; throws if it fails. */
   useValue: () => T;
-  /** Reloads the data from Supabase and notifies subscribers. Rejects if loading fails. */
-  refresh: () => Promise<void>;
 };
 
 /** Resets for stores whose first load failed; see resetFailedLoads(). */
@@ -38,15 +70,27 @@ export function resetFailedLoads() {
   failedLoads.clear();
 }
 
-/** Internal extras of a store, used by createKeyedRemoteStore(). */
+/** Internal extras of a store, used by invalidate() and createKeyedRemoteStore(). */
 type TrackedRemoteStore<T> = RemoteStore<T> & {
+  /** Reloads the data from Supabase and notifies subscribers. Rejects if loading fails. */
+  refresh: () => Promise<void>;
   /** Whether a mounted component is reading it. */
   watched: () => boolean;
   /** Whether a load has finished (so dropping it can't interrupt one React is waiting on). */
   loaded: () => boolean;
 };
 
-export function createRemoteStore<T>(load: () => Promise<T>): TrackedRemoteStore<T> {
+/**
+ * A store for data that doesn't depend on a parameter (e.g. all of the user's tags). Create it
+ * once, at module level: it registers itself for invalidate().
+ */
+export function createRemoteStore<T>(load: () => Promise<T>, options: RemoteStoreOptions): RemoteStore<T> {
+  const store = createTrackedStore(load);
+  register(options.tables, store.refresh);
+  return { useValue: store.useValue };
+}
+
+function createTrackedStore<T>(load: () => Promise<T>): TrackedRemoteStore<T> {
   let value: T | undefined;
   let loaded = false;
   let firstLoad: Promise<void> | null = null;
@@ -125,18 +169,18 @@ export function createRemoteStore<T>(load: () => Promise<T>): TrackedRemoteStore
 export type KeyedRemoteStore<K, T> = {
   /** The data for `key`. Suspends until it's loaded; throws if loading fails. */
   useValue: (key: K) => T;
-  /**
-   * Reloads every key that a mounted component is showing and forgets the others (they load
-   * fresh the next time they're read). Rejects if a reload fails.
-   */
-  refresh: () => Promise<void>;
 };
 
 /**
  * Like createRemoteStore(), but one in-memory copy per key, e.g. per search term. Each key gets
- * its own store, so it suspends, caches, and refetches on tab focus the same way.
+ * its own store, so it suspends, caches, and refetches on tab focus the same way. On
+ * invalidate(), it reloads the keys a mounted component is showing and forgets the others (they
+ * load fresh the next time they're read).
  */
-export function createKeyedRemoteStore<K, T>(load: (key: K) => Promise<T>): KeyedRemoteStore<K, T> {
+export function createKeyedRemoteStore<K, T>(
+  load: (key: K) => Promise<T>,
+  options: RemoteStoreOptions,
+): KeyedRemoteStore<K, T> {
   // In order of last use (oldest first), so the cache can drop the least recently used keys.
   const stores = new Map<K, TrackedRemoteStore<T>>();
 
@@ -145,7 +189,7 @@ export function createKeyedRemoteStore<K, T>(load: (key: K) => Promise<T>): Keye
     if (store) {
       stores.delete(key);
     } else {
-      store = createRemoteStore(() => load(key));
+      store = createTrackedStore(() => load(key));
       evictUnused();
     }
     stores.set(key, store);
@@ -172,7 +216,8 @@ export function createKeyedRemoteStore<K, T>(load: (key: K) => Promise<T>): Keye
     await Promise.all(reloads);
   }
 
-  return { useValue: (key) => storeFor(key).useValue(), refresh };
+  register(options.tables, refresh);
+  return { useValue: (key) => storeFor(key).useValue() };
 }
 
 /** A resolved promise marked the way React's use() marks promises it has seen resolve. */

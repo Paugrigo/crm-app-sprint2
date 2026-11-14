@@ -8,7 +8,7 @@ import {
   type DateFilter,
   type MeetingFilters,
 } from "@/lib/meeting-filters";
-import { useMeetings } from "@/lib/meetings";
+import { useParticipants } from "@/lib/meetings";
 import { sortTags, useTags } from "@/lib/tags";
 import { DatePicker } from "./date-picker";
 import { buttonGhost, input, label } from "./ui";
@@ -91,21 +91,13 @@ function TagFilter({
   );
 }
 
-/** Everyone in the user's meetings, most met first; names that differ only in case count once. */
-function useParticipants(): string[] {
-  const meetings = useMeetings();
-  const byKey = new Map<string, { name: string; count: number }>();
-  for (const meeting of meetings) {
-    for (const name of meeting.participants) {
-      const key = name.trim().toLowerCase();
-      if (!key) continue;
-      const entry = byKey.get(key);
-      if (entry) entry.count++;
-      else byKey.set(key, { name: name.trim(), count: 1 });
-    }
-  }
-  return [...byKey.values()]
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+/**
+ * Everyone in the user's meetings, most met first; names that differ only in case count once
+ * (grouped by the database, see useParticipants()).
+ */
+function useParticipantNames(): string[] {
+  return [...useParticipants()]
+    .sort((a, b) => b.meetings - a.meetings || a.name.localeCompare(b.name))
     .map((p) => p.name);
 }
 
@@ -116,7 +108,7 @@ function PeopleFilter({
   filters: MeetingFilters;
   onChange: (patch: Partial<MeetingFilters>) => void;
 }) {
-  const participants = useParticipants();
+  const participants = useParticipantNames();
   const [find, setFind] = useState("");
   const selected = filters.people;
   const isSelected = (name: string) => selected.some((s) => s.toLowerCase() === name.toLowerCase());

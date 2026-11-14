@@ -2,8 +2,7 @@
 // Row Level Security limits every query to the signed-in user's rows. Browser-only: see
 // lib/remote-store.ts.
 
-import { refreshMeetings } from "./meetings";
-import { createRemoteStore } from "./remote-store";
+import { createRemoteStore, invalidate } from "./remote-store";
 import { getSupabase } from "./supabase/client";
 
 export type Tag = {
@@ -11,15 +10,26 @@ export type Tag = {
   name: string;
 };
 
+/**
+ * Longest tag name, counted after trimming. Same limit as the check constraint on `tags.name` in
+ * supabase/migrations/20261108120000_initial_schema.sql; change both together.
+ */
 export const TAG_NAME_MAX_LENGTH = 40;
 
 /** Postgres error code for a unique constraint violation (here: a duplicate tag name). */
 const UNIQUE_VIOLATION = "23505";
 
-export function isTag(value: unknown): value is Tag {
-  if (typeof value !== "object" || value === null) return false;
+/**
+ * Returns the value as a Tag with a trimmed name, or null if it isn't one or the database would
+ * reject the name (blank or longer than TAG_NAME_MAX_LENGTH). Used for backup files.
+ */
+export function toTag(value: unknown): Tag | null {
+  if (typeof value !== "object" || value === null) return null;
   const t = value as Record<string, unknown>;
-  return typeof t.id === "string" && typeof t.name === "string";
+  if (typeof t.id !== "string" || typeof t.name !== "string") return null;
+  const name = t.name.trim();
+  if (!name || name.length > TAG_NAME_MAX_LENGTH) return null;
+  return { id: t.id, name };
 }
 
 /** Tag names are unique per user regardless of case and surrounding spaces. */
@@ -38,12 +48,26 @@ async function fetchTags(): Promise<Tag[]> {
   return data;
 }
 
-const store = createRemoteStore(fetchTags);
+const store = createRemoteStore(fetchTags, { tables: ["tags"] });
 
 /** The signed-in user's tags (unsorted). Suspends until loaded. */
 export const useTags = store.useValue;
 
-export const refreshTags = store.refresh;
+/** How many meetings each tag is on, by tag ID, counted by the database. */
+async function fetchTagMeetingCounts(): Promise<Map<string, number>> {
+  // meeting_tags(count) makes PostgREST count each tag's links instead of returning them.
+  const { data, error } = await getSupabase()
+    .from("tags")
+    .select("id, meeting_tags(count)")
+    .returns<{ id: string; meeting_tags: { count: number }[] }[]>();
+  if (error) throw error;
+  return new Map(data.map((row) => [row.id, row.meeting_tags[0]?.count ?? 0]));
+}
+
+const countsStore = createRemoteStore(fetchTagMeetingCounts, { tables: ["tags", "meeting_tags"] });
+
+/** How many meetings each of the user's tags is on, by tag ID. Suspends until loaded. */
+export const useTagMeetingCounts = countsStore.useValue;
 
 /** Thrown when a tag name is already taken (the database enforces this too). */
 export class DuplicateTagNameError extends Error {}
@@ -58,7 +82,7 @@ export async function createTag(name: string) {
     const { error } = await getSupabase().from("tags").insert({ name });
     if (error) rethrow(error);
   } finally {
-    await store.refresh().catch(() => {});
+    await invalidate("tags");
   }
 }
 
@@ -68,8 +92,8 @@ export async function renameTag(id: string, name: string) {
     const { error } = await getSupabase().from("tags").update({ name }).eq("id", id);
     if (error) rethrow(error);
   } finally {
-    // Search results can match on tag names.
-    await Promise.all([store.refresh().catch(() => {}), refreshMeetings()]);
+    // Also reloads meeting search results, which match on tag names.
+    await invalidate("tags");
   }
 }
 
@@ -79,6 +103,7 @@ export async function deleteTag(id: string) {
     const { error } = await getSupabase().from("tags").delete().eq("id", id);
     if (error) throw error;
   } finally {
-    await Promise.all([store.refresh().catch(() => {}), refreshMeetings()]);
+    // Deleting a tag also deletes its meeting_tags rows (on delete cascade).
+    await invalidate("tags", "meeting_tags");
   }
 }

@@ -2,7 +2,6 @@
 
 import { use, useLayoutEffect, useState, type FormEvent, type KeyboardEvent } from "react";
 import { browser } from "react-dom";
-import { useMeetings } from "@/lib/meetings";
 import { describeError } from "@/lib/remote-store";
 import {
   createTag,
@@ -12,6 +11,7 @@ import {
   sameTagName,
   sortTags,
   TAG_NAME_MAX_LENGTH,
+  useTagMeetingCounts,
   useTags,
   type Tag,
 } from "@/lib/tags";
@@ -29,13 +29,23 @@ import {
 
 type Status = { kind: "success" | "error"; text: string };
 
-// Browser-only: tags and meetings are loaded from Supabase with the signed-in user's session.
+/**
+ * The error for a tag name that's too long, or null. Checked on save instead of with `maxLength`,
+ * which would silently cut off a pasted name and count surrounding spaces the database ignores.
+ */
+function tooLongError(trimmed: string): string | null {
+  return trimmed.length > TAG_NAME_MAX_LENGTH
+    ? `Shorten the tag name to ${TAG_NAME_MAX_LENGTH} characters or fewer (it has ${trimmed.length}).`
+    : null;
+}
+
+// Browser-only: tags and their meeting counts are loaded from Supabase with the signed-in user's session.
 // Render inside a <Suspense> boundary.
 export function TagsManager() {
   use(browser("Tags are loaded from Supabase in the browser."));
 
   const tags = useTags();
-  const meetings = useMeetings();
+  const meetingCounts = useTagMeetingCounts();
   const [name, setName] = useState("");
   const [status, setStatus] = useState<Status | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -55,6 +65,11 @@ export function TagsManager() {
     event.preventDefault();
     const trimmed = name.trim();
     if (!trimmed || creating) return;
+    const lengthError = tooLongError(trimmed);
+    if (lengthError) {
+      setStatus({ kind: "error", text: lengthError });
+      return;
+    }
 
     const existing = tags.find((tag) => sameTagName(tag.name, trimmed));
     if (existing) {
@@ -83,6 +98,8 @@ export function TagsManager() {
   async function handleRename(tag: Tag, newName: string): Promise<string | null> {
     const trimmed = newName.trim();
     if (!trimmed) return "Tag name can't be empty.";
+    const lengthError = tooLongError(trimmed);
+    if (lengthError) return lengthError;
     const existing = tags.find((t) => t.id !== tag.id && sameTagName(t.name, trimmed));
     if (existing) return `A tag named "${existing.name}" already exists.`;
 
@@ -112,7 +129,7 @@ export function TagsManager() {
   }
 
   function meetingCount(tagId: string): number {
-    return meetings.filter((meeting) => meeting.tagIds.includes(tagId)).length;
+    return meetingCounts.get(tagId) ?? 0;
   }
 
   return (
@@ -130,7 +147,6 @@ export function TagsManager() {
               id="tag-name"
               type="text"
               required
-              maxLength={TAG_NAME_MAX_LENGTH}
               value={name}
               onChange={(e) => {
                 setName(e.target.value);
@@ -292,7 +308,6 @@ function RenameTagForm({
           type="text"
           required
           autoFocus
-          maxLength={TAG_NAME_MAX_LENGTH}
           value={name}
           onChange={(e) => {
             setName(e.target.value);
