@@ -167,41 +167,63 @@ const countStore = createRemoteStore(fetchMeetingCount, { tables: ["meetings"] }
 /** How many meetings the signed-in user has. Suspends until loaded. */
 export const useMeetingCount = countStore.useValue;
 
-/** The first `limit` meetings matching a search, and how many match in total. */
+/**
+ * Meetings per page of the meeting log. Must stay at or below the API's max_rows (1000,
+ * supabase/config.toml), since a page is one request.
+ */
+export const MEETINGS_PAGE_SIZE = 100;
+
+/** One page of meetings matching a search, and how many match in total. */
 export type MeetingPage = { meetings: Meeting[]; total: number };
 
+/** PostgREST error code for a range that starts past the last row (e.g. a page that's gone). */
+const RANGE_NOT_SATISFIABLE = "PGRST103";
+
+function searchMeetingsQuery(search: MeetingSearch) {
+  return getSupabase().rpc(
+    "search_meetings",
+    {
+      search: search.query || null,
+      tag_ids: search.tagIds.length > 0 ? search.tagIds : null,
+      tags_match_all: search.tagsMatchAll,
+      participants: search.people.length > 0 ? search.people : null,
+      participants_match_all: search.peopleMatchAll,
+      date_from: search.from || null,
+      date_to: search.to || null,
+    },
+    // Always a POST: a `head` or `get` call sends the arguments in the URL, where null becomes
+    // the text "null" (an invalid tag ID list), so the request fails.
+    { count: "exact" },
+  );
+}
+
 /**
- * The first `limit` meetings matching a search (text and filters), newest first, found by the
- * database (the search_meetings function; see supabase/migrations): only those rows are
- * downloaded. An empty search matches every meeting. Takes the key as JSON because results are
- * cached per search and limit (see searchStore).
+ * Page `page` (1-based) of the meetings matching a search (text and filters), newest first,
+ * found by the database (the search_meetings function; see supabase/migrations): only that
+ * page's rows are downloaded. An empty search matches every meeting. Takes the key as JSON
+ * because results are cached per search and page (see searchStore).
  */
 async function searchMeetings(keyJson: string): Promise<MeetingPage> {
-  const { search, limit } = JSON.parse(keyJson) as { search: MeetingSearch; limit: number };
+  const { search, page } = JSON.parse(keyJson) as { search: MeetingSearch; page: number };
+  const from = (page - 1) * MEETINGS_PAGE_SIZE;
   const { data, error, count } = await newestFirst(
-    getSupabase()
-      .rpc(
-        "search_meetings",
-        {
-          search: search.query || null,
-          tag_ids: search.tagIds.length > 0 ? search.tagIds : null,
-          tags_match_all: search.tagsMatchAll,
-          participants: search.people.length > 0 ? search.people : null,
-          participants_match_all: search.peopleMatchAll,
-          date_from: search.from || null,
-          date_to: search.to || null,
-        },
-        { count: "exact" },
-      )
+    searchMeetingsQuery(search)
       // PostgREST can only order a function's results by selected columns, so created_at is
       // selected here too (fromRow ignores it).
       .select(`${MEETING_COLUMNS}, created_at`),
-  ).range(0, limit - 1);
+  ).range(from, from + MEETINGS_PAGE_SIZE - 1);
+  if (error?.code === RANGE_NOT_SATISFIABLE) {
+    // The page starts past the last match (e.g. its meetings were deleted, or an old link):
+    // no rows, but the total is still needed to offer the last page. Ask for one row to get it.
+    const first = await searchMeetingsQuery(search).select("id").range(0, 0);
+    if (first.error) throw first.error;
+    return { meetings: [], total: first.count ?? 0 };
+  }
   if (error) throw error;
   // Without generated database types, supabase-js can't tell that this function returns rows
   // (setof meetings) rather than one value, so the row type is asserted here.
   const meetings = (data as unknown as MeetingRow[]).map(fromRow);
-  return { meetings, total: count ?? meetings.length };
+  return { meetings, total: count ?? from + meetings.length };
 }
 
 // Reads tags too: the search text matches tag names.
@@ -210,11 +232,12 @@ const searchStore = createKeyedRemoteStore(searchMeetings, {
 });
 
 /**
- * The first `limit` of the signed-in user's meetings matching `search` (see
- * lib/meeting-filters.ts), newest first, with the total number of matches. Suspends until loaded.
+ * Page `page` (1-based, MEETINGS_PAGE_SIZE per page) of the signed-in user's meetings matching
+ * `search` (see lib/meeting-filters.ts), newest first, with the total number of matches.
+ * Suspends until loaded.
  */
-export function useMeetingPage(search: MeetingSearch, limit: number): MeetingPage {
-  return searchStore.useValue(JSON.stringify({ search, limit }));
+export function useMeetingPage(search: MeetingSearch, page: number): MeetingPage {
+  return searchStore.useValue(JSON.stringify({ search, page }));
 }
 
 /** Every meeting of the signed-in user, newest first, read page by page. For backup export. */

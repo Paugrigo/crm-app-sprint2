@@ -6,13 +6,15 @@ import { browser } from "react-dom";
 import {
   NO_FILTERS,
   readMeetingFilters,
+  readMeetingPage,
   SEARCH_MAX_LENGTH,
   toMeetingSearch,
   writeMeetingFilters,
+  writeMeetingPage,
   type MeetingFilters,
   type MeetingSearch,
 } from "@/lib/meeting-filters";
-import { deleteMeeting, useMeetingPage } from "@/lib/meetings";
+import { deleteMeeting, MEETINGS_PAGE_SIZE, useMeetingPage } from "@/lib/meetings";
 import { describeError } from "@/lib/remote-store";
 import { useTags } from "@/lib/tags";
 import { MeetingFilterBar } from "./meeting-filter-bar";
@@ -21,9 +23,6 @@ import { errorBox, iconButton, input } from "./ui";
 
 /** How long to wait after the last keystroke before searching. */
 const SEARCH_DELAY_MS = 250;
-
-/** Meetings shown at first, and added by each "Show more". */
-const PAGE_SIZE = 100;
 
 /** Applies a change to the filters in the URL, starting from what the URL holds right now. */
 function updateFilters(patch: Partial<MeetingFilters>) {
@@ -44,7 +43,9 @@ function isFiltered(search: MeetingSearch): boolean {
 export function MeetingLog() {
   use(browser("Meetings are loaded from Supabase in the browser."));
 
-  const urlFilters = readMeetingFilters(useSearchParams());
+  const params = useSearchParams();
+  const urlFilters = readMeetingFilters(params);
+  const page = readMeetingPage(params);
   // Ignore tags that no longer exist (e.g. deleted since the link was bookmarked).
   const tags = useTags();
   const filters: MeetingFilters = {
@@ -53,18 +54,15 @@ export function MeetingLog() {
   };
   const search = toMeetingSearch(filters);
   const searchKey = JSON.stringify(search);
-  // How many meetings to show. "Show more" raises it for the current search; any other search
-  // starts again at one page.
-  const [shownMore, setShownMore] = useState({ searchKey, limit: PAGE_SIZE });
-  const limit = shownMore.searchKey === searchKey ? shownMore.limit : PAGE_SIZE;
   // While the next results load, keep showing the current ones (dimmed) instead of the
   // Suspense fallback. Compared as JSON, since a new object is built on every render.
-  const pageKey = JSON.stringify({ search, limit });
+  const pageKey = JSON.stringify({ search, page });
   const shownKey = useDeferredValue(pageKey);
-  const shown = JSON.parse(shownKey) as { search: MeetingSearch; limit: number };
+  const shown = JSON.parse(shownKey) as { search: MeetingSearch; page: number };
   const loading = shownKey !== pageKey;
-  // Loading because the search changed (not only "Show more"): the search box says so.
+  // Loading because the search changed (not only the page): the search box says so.
   const searching = loading && JSON.stringify(shown.search) !== searchKey;
+  const topRef = useRef<HTMLElement>(null);
   const [error, setError] = useState<string | null>(null);
   // Bumped by "Clear all": remounts the search box, which drops text typed but not yet searched
   // and its pending debounce timer (that would otherwise write the text back into the URL).
@@ -73,6 +71,12 @@ export function MeetingLog() {
   function clearAll() {
     setSearchBoxKey((key) => key + 1);
     writeMeetingFilters(NO_FILTERS);
+  }
+
+  function goToPage(next: number) {
+    writeMeetingPage(next);
+    // The page controls sit below the list; start reading the new page from its top.
+    topRef.current?.scrollIntoView({ block: "start" });
   }
 
   async function handleDelete(id: string) {
@@ -85,7 +89,7 @@ export function MeetingLog() {
   }
 
   return (
-    <section>
+    <section ref={topRef}>
       <SearchBox key={searchBoxKey} urlQuery={filters.query} loading={searching} />
       <MeetingFilterBar filters={filters} onChange={updateFilters} onClearAll={clearAll} />
       {error && (
@@ -96,11 +100,11 @@ export function MeetingLog() {
       <div aria-busy={loading} className={`transition-opacity ${loading ? "opacity-60" : ""}`}>
         <Results
           search={shown.search}
-          limit={shown.limit}
+          page={shown.page}
           onDelete={handleDelete}
           onClear={clearAll}
-          onShowMore={() => setShownMore({ searchKey, limit: limit + PAGE_SIZE })}
-          loadingMore={loading && !searching}
+          onPageChange={goToPage}
+          changingPage={loading && !searching}
         />
       </div>
     </section>
@@ -108,32 +112,34 @@ export function MeetingLog() {
 }
 
 /**
- * The first `limit` meetings matching the search, as returned by the database (all meetings
+ * One page of the meetings matching the search, as returned by the database (all meetings
  * when nothing is searched or filtered).
  */
 function Results({
   search,
-  limit,
+  page,
   onDelete,
   onClear,
-  onShowMore,
-  loadingMore,
+  onPageChange,
+  changingPage,
 }: {
   search: MeetingSearch;
-  limit: number;
+  page: number;
   onDelete: (id: string) => void;
   onClear: () => void;
-  onShowMore: () => void;
-  loadingMore: boolean;
+  onPageChange: (page: number) => void;
+  changingPage: boolean;
 }) {
-  const { meetings, total } = useMeetingPage(search, limit);
+  const { meetings, total } = useMeetingPage(search, page);
   return (
     <MeetingList
       meetings={meetings}
       total={total}
+      page={page}
+      pageSize={MEETINGS_PAGE_SIZE}
       onDelete={onDelete}
-      onShowMore={onShowMore}
-      loadingMore={loadingMore}
+      onPageChange={onPageChange}
+      changingPage={changingPage}
       search={
         isFiltered(search)
           ? { query: search.query, filtered: isFiltered({ ...search, query: "" }), onClear }
