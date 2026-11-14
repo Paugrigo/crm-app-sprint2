@@ -10,9 +10,14 @@ type Mode = "sign-in" | "sign-up";
 /** Where to go after signing in: the `next` page the proxy sent us from, if it's on this site. */
 function nextPath(): string {
   const next = new URLSearchParams(window.location.search).get("next");
-  // Only same-site paths: "/x" but not "//evil.example" or "/\\evil.example".
-  if (next && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\")) {
-    return next;
+  if (!next) return "/";
+  // Resolve it the way the browser will, then keep it only if it stays on this site.
+  // Prefix checks aren't enough: browsers drop tabs/newlines, so "/\t/evil.example" becomes "//evil.example".
+  try {
+    const url = new URL(next, window.location.origin);
+    if (url.origin === window.location.origin) return url.pathname + url.search + url.hash;
+  } catch {
+    // Not a valid URL: fall through to "/".
   }
   return "/";
 }
