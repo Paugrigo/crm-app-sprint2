@@ -9,7 +9,9 @@ export async function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
-    // Every path except Next.js build assets, image optimization, and static files.
-    "/((?!_next/static|_next/image|favicon\\.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    // Every path except Next.js build assets, image optimization, and image files at the top
+    // level (where public/ files are served). Deeper paths always run the proxy, so a URL like
+    // /meetings/x.png still gets the sign-in redirect.
+    "/((?!_next/static|_next/image|[^/]+\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };

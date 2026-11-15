@@ -13,9 +13,11 @@ function nextPath(): string {
   if (!next) return "/";
   // Resolve it the way the browser will, then keep it only if it stays on this site.
   // Prefix checks aren't enough: browsers drop tabs/newlines, so "/\t/evil.example" becomes "//evil.example".
+  // Return the absolute URL, not just the path: resolving "/.//evil.example" gives the path
+  // "//evil.example", which the browser would read as a link to another site.
   try {
     const url = new URL(next, window.location.origin);
-    if (url.origin === window.location.origin) return url.pathname + url.search + url.hash;
+    if (url.origin === window.location.origin) return url.href;
   } catch {
     // Not a valid URL: fall through to "/".
   }
@@ -73,7 +75,8 @@ export function AuthForm({ mode }: { mode: Mode }) {
         <h1 className="mt-2 text-xl font-semibold tracking-tight text-fg">Confirm your address</h1>
         <p className="mt-2 text-sm text-muted">
           We sent a confirmation link to <span className="text-fg">{confirmationSentTo}</span>.
-          Open it in this browser to finish creating your account.
+          Open it in this browser to finish creating your account. If you already have an account
+          with this email, no email is sent: sign in instead.
         </p>
         <Link href="/sign-in" className={`${buttonPrimary} mt-5`}>
           Go to sign in
