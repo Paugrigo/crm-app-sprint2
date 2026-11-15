@@ -74,12 +74,10 @@ export async function signUp(email: unknown, password: unknown): Promise<AuthRes
   });
   if (error) return { ok: false, error: describeAuthError(error) };
 
-  // With email confirmation on, Supabase doesn't reveal that an email is taken: it returns a
-  // user with no identities instead of an error.
-  if (data.user && data.user.identities?.length === 0) {
-    return { ok: false, error: "An account with this email already exists. Sign in instead." };
-  }
-  // No session means the project requires email confirmation before the first sign-in.
+  // No session means the project requires email confirmation before the first sign-in. With
+  // confirmation on, Supabase hides whether the email is already taken (it returns a user with no
+  // identities and sends no email); give the same answer either way, so the form can't be used
+  // to find out who has an account.
   if (!data.session) return { ok: true, needsConfirmation: true };
   return { ok: true };
 }
